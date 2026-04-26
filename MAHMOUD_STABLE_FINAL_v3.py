@@ -899,14 +899,46 @@ def analyze(sym):
 
 import time as _time_mod
 
-DEFAULT_SCAN_LIST = [
-    "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
-    "ADAUSDT","DOTUSDT","LINKUSDT","AVAXUSDT","MATICUSDT",
-    "NEARUSDT","INJUSDT","SUIUSDT","ARBUSDT","OPUSDT",
-    "RENDERUSDT","FETUSDT","TAOUSDT","HYPEUSDT","TIAUSDT",
-    "WIFUSDT","PEPEUSDT","DOGEUSDT","SHIBUSDT","BONKUSDT",
-    "AAVEUSDT","UNIUSDT","MKRUSDT","CRVUSDT","LDOUSDT",
-]
+# عملات مستبعدة
+_SCAN_EXCLUDED = {
+    "USDTUSDT","BUSDUSDT","USDCUSDT","DAIUSDT","TUSDUSDT",
+    "FDUSDUSDT","WBTCUSDT","WETHUSDT","STETHUSDT",
+}
+
+# كاش قائمة العملات
+_all_futures_cache: list = []
+_cache_ts: float = 0
+
+def get_all_futures_symbols() -> list:
+    """جلب كل رموز Binance Futures USDT ديناميكياً."""
+    global _all_futures_cache, _cache_ts
+    import time as _t
+    # تحديث كل ساعة
+    if _all_futures_cache and (_t.time() - _cache_ts) < 3600:
+        return _all_futures_cache
+    try:
+        for url in [
+            f"{BASE}/fapi/v1/ticker/24hr",
+            "https://fapi.binance.com/fapi/v1/ticker/24hr",
+        ]:
+            r = api_get(url, timeout=(12, 30))
+            if r and r.status_code == 200:
+                syms = []
+                for t in r.json():
+                    s = t.get("symbol","")
+                    if s.endswith("USDT") and s not in _SCAN_EXCLUDED:
+                        syms.append(s)
+                if syms:
+                    _all_futures_cache = sorted(syms)
+                    _cache_ts = _t.time()
+                    logging.warning(f"[SCAN_LIST] {len(syms)} عملة Futures")
+                    return syms
+    except Exception as e:
+        logging.warning(f"[SCAN_LIST] {e}")
+    # fallback
+    return _all_futures_cache or ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT"]
+
+DEFAULT_SCAN_LIST = []  # يُجلب ديناميكياً
 
 scan_lists:   dict = {}
 scan_alerted: dict = {}
@@ -1318,7 +1350,9 @@ async def auto_scanner_job(ctx):
     """مسح تلقائي كل 30 دقيقة بكل المؤشرات."""
     chat_id   = ctx.job.data["chat_id"]
     min_score = ctx.job.data.get("min_score", 7)
-    sym_list  = scan_lists.get(chat_id, DEFAULT_SCAN_LIST)
+    # جلب كل عملات Futures أو القائمة المخصصة
+    custom = scan_lists.get(chat_id, [])
+    sym_list = custom if custom else get_all_futures_symbols()
     now_ts    = _time_mod.time()
     found     = []
 
@@ -1752,7 +1786,7 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
         await u.message.reply_text("⛔ تم إيقاف الماسح الذكي"); return
 
     if text in ("قائمة الماسح","عملات الماسح"):
-        lst=scan_lists.get(chat_id,DEFAULT_SCAN_LIST)
+        lst=scan_lists.get(chat_id,[]) or get_all_futures_symbols()
         m2=f"📋 *عملات الماسح ({len(lst)}):*\n\n"
         m2+=" | ".join([f"`{s[:-4]}`" for s in lst])
         m2+="\n\n`أضف ORCA` أو `احذف ORCA`"
