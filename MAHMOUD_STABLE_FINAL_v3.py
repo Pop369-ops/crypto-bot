@@ -41,7 +41,8 @@ ETHERSCAN_KEY = (_os.environ.get("ETHERSCAN_KEY", "").strip()
 # ==================================================
 
 BASE        = "https://fapi.binance.com"
-ETH_API     = "https://api.etherscan.io/api"
+ETH_API     = "https://api.etherscan.io/v2/api"  # V2 API (V1 deprecated Aug 2025)
+ETH_CHAIN   = 1  # Ethereum Mainnet
 watching    = {}
 open_trades = {}  # {chat_id: {sym: {action,entry,sl,tp1,tp2,tp1_hit}}}
 
@@ -215,7 +216,12 @@ def fetch_onchain(sym):
     try:
         r = session.get(
             ETH_API,
-            params={"module":"gastracker","action":"gasoracle","apikey":ETHERSCAN_KEY},
+            params={
+                "chainid": ETH_CHAIN,  # مطلوب في V2
+                "module": "gastracker",
+                "action": "gasoracle",
+                "apikey": ETHERSCAN_KEY,
+            },
             timeout=(5,10),
         )
         j = r.json()
@@ -861,11 +867,11 @@ def analyze(sym):
         if sl_total >= 5:
             R["action"]   = "LONG"
             R["decision"] = "✅ ادخل LONG"
-            R["conf"]     = f"{sl}/8 مؤشرات + ICT {'✅' if ict_bonus_l else ''}"
+            R["conf"]     = f"{sl}/9 مؤشرات + ICT {'✅' if ict_bonus_l else ''}"
         elif ss_total >= 5 and not no_short:
             R["action"]   = "SHORT"
             R["decision"] = "🔴 ادخل SHORT"
-            R["conf"]     = f"{ss}/8 مؤشرات + ICT {'✅' if ict_bonus_s else ''}"
+            R["conf"]     = f"{ss}/9 مؤشرات + ICT {'✅' if ict_bonus_s else ''}"
         elif ss_total >= 5 and no_short:
             R["action"]   = "WAIT"
             R["decision"] = "⛔ لا تشورت — Funding سالب"
@@ -873,7 +879,7 @@ def analyze(sym):
         else:
             R["action"]   = "WAIT"
             R["decision"] = "⏳ انتظر — الشروط ناقصة"
-            R["conf"]     = f"لونج {sl}/8 | شورت {ss}/8"
+            R["conf"]     = f"لونج {sl}/9 | شورت {ss}/9"
 
         # ─── SL / TP ───
         if df is not None:
@@ -1525,7 +1531,7 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
         await u.message.reply_text(
             f"👁 *بدأت متابعة {sym}*\n"
             f"كل 15 دقيقة\n"
-            f"✅ تنبيه دخول: 5/8 إشارات\n"
+            f"✅ تنبيه دخول: 5/9 إشارات\n"
             f"🔔 تنبيه خروج: SL | TP1 | TP2 | انعكاس\n"
             f"إيقاف: `وقف {sym[:-4]}`",
             parse_mode="Markdown")
@@ -1734,8 +1740,13 @@ async def _post_init(app):
     if ETHERSCAN_KEY:
         try:
             r = session.get(
-                "https://api.etherscan.io/api",
-                params={"module": "stats", "action": "ethsupply", "apikey": ETHERSCAN_KEY},
+                ETH_API,
+                params={
+                    "chainid": ETH_CHAIN,
+                    "module": "stats",
+                    "action": "ethsupply",
+                    "apikey": ETHERSCAN_KEY,
+                },
                 timeout=(5, 10),
             )
             j = r.json()
