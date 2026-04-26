@@ -1342,23 +1342,32 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
     await u.message.reply_text(
         "👋 *MAHMOUD TRADING BOT v3*\n\n"
         "📊 *8 مؤشرات:*\n"
-        "① Funding Rate\n"
-        "② Open Interest\n"
-        "③ Long/Short Ratio\n"
-        "④ EMA + Volume\n"
-        "⑤ Liquidations\n"
-        "⑥ CVD\n"
+        "① Funding Rate | ② Open Interest\n"
+        "③ Long/Short | ④ EMA + Volume\n"
+        "⑤ Liquidations | ⑥ CVD\n"
         f"⑦ On-Chain (Etherscan) {eth_status}\n"
         "⑧ شموع MTF (15m|1h|4h|1d)\n\n"
         "━━━━━━━━━━━━━━━━\n"
         "📈 *تحليل فوري:*\n"
-        "أرسل: `BTC` أو `ETH` أو `SOL`\n\n"
-        "👁 *متابعة تلقائية (دخول+خروج):*\n"
-        "أرسل: `تابع BTC`\n\n"
-        "⛔ *إيقاف:* `وقف BTC` أو `وقف الكل`\n\n"
+        "أرسل: `BTC` أو `ETH` أو `SOL` أو أي عملة\n\n"
+        "👁 *متابعة تلقائية:*\n"
+        "`تابع BTC` | `وقف BTC` | `وقف الكل`\n\n"
+        "⚡ *Scalping (1m/5m):*\n"
+        "`سكالب BTC` — تحليل فوري\n"
+        "`تابع سكالب BTC` — تنبيه كل 5 دقائق\n"
+        "`وقف سكالب BTC` — إيقاف\n\n"
+        "━━━━━━━━━━━━━━━━\n"
+        "🔍 *الماسح الذكي (ICT/SMC):*\n"
+        "`ماسح` — يفحص كل عملات الفيوتشر كل 30 دقيقة\n"
+        "`ماسح 5` — أكثر إشارات (حد 5 نقاط)\n"
+        "`ماسح 8` — أقوى فقط (حد 8 نقاط)\n"
+        "`وقف ماسح` — إيقاف\n"
+        "`قائمة الماسح` — العملات المراقبة\n"
+        "`أضف ORCA` | `احذف ORCA`\n\n"
         "📋 *القائمة:* `قائمة`\n\n"
         "⚠️ _للأغراض التعليمية فقط_",
         parse_mode="Markdown")
+
 
 
 async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
