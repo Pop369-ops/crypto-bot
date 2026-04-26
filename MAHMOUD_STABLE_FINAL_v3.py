@@ -615,8 +615,13 @@ def build_ict_section(ict, price):
     if sweep:
         msg += "Sweep: " + sweep["type"] + " | " + fp_crypto(sweep["level"]) + "\n"
 
-    if ict.get("sl") and ict.get("tp1"):
-        action = "LONG" if ict.get("bull",0) > ict.get("bear",0) else "SHORT"
+    # ICT Entry يظهر فقط لو فيه ميل واضح (فرق ≥ 3 نقاط بين البول والبير)
+    bull_score = ict.get("bull", 0)
+    bear_score = ict.get("bear", 0)
+    diff = abs(bull_score - bear_score)
+
+    if ict.get("sl") and ict.get("tp1") and diff >= 3:
+        action = "LONG" if bull_score > bear_score else "SHORT"
         msg += "---\n"
         msg += "ICT Entry (" + action + "):\n"
         msg += "  دخول: `" + fp_crypto(price) + "`\n"
@@ -628,6 +633,11 @@ def build_ict_section(ict, price):
         rr_risk = abs(price - ict["sl"]) if ict.get("sl") else 0
         rr_val  = abs(ict["tp1"] - price) / rr_risk if rr_risk > 0 else 0
         msg += f"  RR:   1:{rr_val:.1f}\n"
+    elif ict.get("sl") and ict.get("tp1"):
+        # إشارة ضعيفة — نعرض ملاحظة بدل خطة دخول كاملة
+        msg += "---\n"
+        msg += "⏳ *لا توجد إشارة ICT واضحة* (فرق نقاط ضعيف)\n"
+        msg += f"   البول: {bull_score} | البير: {bear_score}\n"
 
     return msg + "\n"
 def analyze_mtf(sym):
@@ -847,11 +857,19 @@ def analyze(sym):
                 R["sigs"].append(("9","شموع MTF","🔴",
                     tf_line, f"{brt}/4 فريمات هابطة — {pat_str}"))
             elif bt == 2 and brt == 0:
+                R["sl"] += 1
                 R["sigs"].append(("9","شموع MTF","🟡",
-                    tf_line, f"صاعد ضعيف — {pat_str}"))
+                    tf_line, f"صاعد ضعيف ({bt}/4) — {pat_str}"))
             elif brt == 2 and bt == 0:
+                R["ss"] += 1
                 R["sigs"].append(("9","شموع MTF","🟡",
-                    tf_line, f"هابط ضعيف — {pat_str}"))
+                    tf_line, f"هابط ضعيف ({brt}/4) — {pat_str}"))
+            elif bt > brt:
+                R["sigs"].append(("9","شموع MTF","🟡",
+                    tf_line, f"صاعد ({bt}/4 vs {brt}/4) — {pat_str}"))
+            elif brt > bt:
+                R["sigs"].append(("9","شموع MTF","🟡",
+                    tf_line, f"هابط ({brt}/4 vs {bt}/4) — {pat_str}"))
             else:
                 R["sigs"].append(("9","شموع MTF","⚪",tf_line,"محايد"))
         except Exception:
