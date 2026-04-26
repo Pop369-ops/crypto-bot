@@ -37,7 +37,7 @@ logging.basicConfig(level=logging.WARNING)
 # ==================================================
 import os as _os
 BOT_TOKEN = _os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-ETHERSCAN_KEY  = "YOUR_ETHERSCAN_KEY_HERE"
+ETHERSCAN_KEY  = os.environ.get("ETHERSCAN_KEY", "YOUR_ETHERSCAN_KEY_HERE")
 # ==================================================
 
 BASE        = "https://fapi.binance.com"
