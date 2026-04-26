@@ -133,6 +133,33 @@ def fetch_binance(sym):
     if not out["price"]:
         raise Exception(f"❌ {sym} غير متاح — تحقق من اسم العملة")
 
+    # جلب الشموع 1h
+    try:
+        df_1h = fetch_tf(sym, "1h", 100)
+        out["df"] = df_1h
+    except:
+        out["df"] = None
+
+    # Open Interest
+    try:
+        r = api_get(f"{BASE}/fapi/v1/openInterest", {"symbol":sym}, timeout=(5,10))
+        if r and r.status_code == 200:
+            out["oi"] = float(r.json().get("openInterest", 0))
+    except:
+        out["oi"] = 0
+
+    # Long/Short Ratio
+    try:
+        r = api_get(f"{BASE}/futures/data/globalLongShortAccountRatio",
+                    {"symbol":sym,"period":"5m","limit":2}, timeout=(5,10))
+        if r and r.status_code == 200:
+            data = r.json()
+            if data:
+                out["ls_long"]  = float(data[0].get("longAccount", 0.5))
+                out["ls_short"] = float(data[0].get("shortAccount", 0.5))
+    except:
+        pass
+
     # 2. شموع 1h (60 شمعة للمؤشرات الأساسية)
     try:
         r  = api_get(f"{BASE}/fapi/v1/klines",
@@ -1132,9 +1159,19 @@ def full_scan(sym):
             "base_sigs":base.get("sigs",[]),"ict_sigs":sigs}
 
 def run_analysis_sync(sym):
-    """نسخة sync من run_analysis."""
-    try: return analyze(sym)
-    except: return None
+    """نسخة sync من run_analysis — يوحّد sl/ss مع bull/bear."""
+    try:
+        R = analyze(sym)
+        if not R: return None
+        # توحيد المفاتيح
+        if "bull" not in R:
+            R["bull"] = R.get("sl", 0)  # sl = bull signals
+        if "bear" not in R:
+            R["bear"] = R.get("ss", 0)  # ss = bear signals
+        return R
+    except Exception as e:
+        logging.warning(f"[SYNC] {sym}: {e}")
+        return None
 
 def build_scan_msg(r, direction):
     sym=r["sym"]; price=r["price"]; bull=r["bull"]; bear=r["bear"]
@@ -1545,7 +1582,11 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
         for j in c.job_queue.get_jobs_by_name(jn): j.schedule_removal()
         c.job_queue.run_repeating(auto_scanner_job,interval=1800,first=30,
             data={"chat_id":chat_id,"min_score":min_sc},name=jn)
-        total=len(scan_lists.get(chat_id,[]) or get_futures_syms())
+        try:
+            _syms = scan_lists.get(chat_id,[]) or get_futures_syms()
+            total = len(_syms)
+        except:
+            total = 350  # تقديري
         await u.message.reply_text(
             f"🔍 *تم تفعيل الماسح الذكي*\n\n"
             f"⏱ كل 30 دقيقة | 📊 {total} عملة\n"
