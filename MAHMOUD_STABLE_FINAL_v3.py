@@ -60,6 +60,53 @@ def api_get(url, params=None, timeout=(4, 8)):
 # Binance — جلب البيانات
 # ==================================================
 
+
+# ── قاموس شامل لكل العملات الشائعة ──
+_ALIASES = {
+    "BTC":"BTCUSDT","ETH":"ETHUSDT","SOL":"SOLUSDT","BNB":"BNBUSDT",
+    "XRP":"XRPUSDT","ADA":"ADAUSDT","AVAX":"AVAXUSDT","DOT":"DOTUSDT",
+    "LINK":"LINKUSDT","MATIC":"MATICUSDT","POL":"POLUSDT",
+    "OP":"OPUSDT","ARB":"ARBUSDT","SUI":"SUIUSDT","SEI":"SEIUSDT",
+    "APT":"APTUSDT","INJ":"INJUSDT","TIA":"TIAUSDT","NEAR":"NEARUSDT",
+    "ATOM":"ATOMUSDT","FTM":"FTMUSDT","S":"SUSDT",
+    # DeFi
+    "UNI":"UNIUSDT","AAVE":"AAVEUSDT","MKR":"MKRUSDT","CRV":"CRVUSDT",
+    "LDO":"LDOUSDT","COMP":"COMPUSDT","SNX":"SNXUSDT",
+    # AI/Compute
+    "RENDER":"RENDERUSDT","RNDR":"RENDERUSDT","FET":"FETUSDT",
+    "AGIX":"AGIXUSDT","OCEAN":"OCEANUSDT","TAO":"TAOUSDT",
+    # Gaming/NFT
+    "AXS":"AXSUSDT","SAND":"SANDUSDT","MANA":"MANAUSDT",
+    "IMX":"IMXUSDT","GALA":"GALAUSDT",
+    # Memecoins
+    "DOGE":"DOGEUSDT","SHIB":"SHIBUSDT","PEPE":"PEPEUSDT",
+    "FLOKI":"FLOKIUSDT","BONK":"BONKUSDT","BOME":"BOMEUSDT",
+    "WIF":"WIFUSDT","POPCAT":"POPCATUSDT","MEW":"MEWUSDT",
+    "NEIRO":"NEIROUSDT","MOG":"MOGUSDT","TURBO":"TURBOUSDT",
+    "1000PEPE":"1000PEPEUSDT","1000SHIB":"1000SHIBUSDT",
+    "1000BONK":"1000BONKUSDT","SATS":"1000SATSUSDT",
+    # DEX/Solana
+    "ORCA":"ORCAUSDT","JUP":"JUPUSDT","PYTH":"PYTHUSDT",
+    "JITO":"JITOUSDT","RAY":"RAYUSDT","DRIFT":"DRIFTUSDT",
+    # Special
+    "HYPE":"HYPEUSDT","HYPR":"HYPRUSDT","CHIP":"CHIPUSDT",
+    "OKB":"OKBUSDT","GT":"GTUSDT","CRO":"CROUSDT",
+    # New
+    "ZK":"ZKUSDT","EIGEN":"EIGENUSDT","IO":"IOUSDT",
+    "ZEUS":"ZEUSUSDT","JUP":"JUPUSDT","W":"WUSDT",
+    "STRK":"STRKUSDT","ALT":"ALTUSDT","MANTA":"MANTAUSDT",
+    "PORTAL":"PORTALUSDT","PIXEL":"PIXELUSDT","SAGA":"SAGAUSDT",
+}
+
+def resolve_sym(raw: str) -> str:
+    """تحويل اسم مختصر لرمز Binance الصحيح."""
+    s = raw.upper().strip()
+    if s in _ALIASES:
+        return _ALIASES[s]
+    if any(s.endswith(x) for x in ("USDT","USDC","BTC","ETH","BUSD")):
+        return s
+    return s + "USDT"
+
 def fetch_binance(sym):
     """جلب كل بيانات Binance Futures لعملة واحدة."""
     out = {
@@ -1551,20 +1598,28 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
     await u.message.reply_text(
         "👋 *MAHMOUD TRADING BOT v3*\n\n"
         "📊 *8 مؤشرات:*\n"
-        "① Funding Rate\n"
-        "② Open Interest\n"
-        "③ Long/Short Ratio\n"
-        "④ EMA + Volume\n"
-        "⑤ Liquidations\n"
-        "⑥ CVD\n"
+        "① Funding Rate | ② Open Interest\n"
+        "③ Long/Short | ④ EMA + Volume\n"
+        "⑤ Liquidations | ⑥ CVD\n"
         f"⑦ On-Chain (Etherscan) {eth_status}\n"
         "⑧ شموع MTF (15m|1h|4h|1d)\n\n"
-        "━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "📈 *تحليل فوري:*\n"
-        "أرسل: `BTC` أو `ETH` أو `SOL`\n\n"
-        "👁 *متابعة تلقائية (دخول+خروج):*\n"
-        "أرسل: `تابع BTC`\n\n"
-        "⛔ *إيقاف:* `وقف BTC` أو `وقف الكل`\n\n"
+        "أرسل: `BTC` أو `ETH` أو `SOL` أو أي عملة\n\n"
+        "👁 *متابعة تلقائية:*\n"
+        "`تابع BTC` | `وقف BTC` | `وقف الكل`\n\n"
+        "⚡ *Scalping (1m/5m):*\n"
+        "`سكالب BTC` — تحليل فوري\n"
+        "`تابع سكالب BTC` — تنبيه كل 5 دقائق\n"
+        "`وقف سكالب BTC` — إيقاف\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔍 *الماسح الذكي (ICT/SMC):*\n"
+        "`ماسح` — يفحص 30 عملة كل 30 دقيقة\n"
+        "`ماسح 5` — أكثر إشارات (حد 5 نقاط)\n"
+        "`ماسح 8` — أقوى فقط (حد 8 نقاط)\n"
+        "`وقف ماسح` — إيقاف\n"
+        "`قائمة الماسح` — العملات المراقبة\n"
+        "`أضف ORCA` | `احذف ORCA`\n\n"
         "📋 *القائمة:* `قائمة`\n\n"
         "⚠️ _للأغراض التعليمية فقط_",
         parse_mode="Markdown")
@@ -1725,9 +1780,8 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
             "أرسل اسم العملة مثل: `BTC`", parse_mode="Markdown")
         return
 
-    sym = text.upper()
-    if not sym.endswith("USDT"):
-        sym += "USDT"
+    # بحث ذكي عن الرمز
+    sym = resolve_sym(text)
 
     wait = await u.message.reply_text(
         f"⏳ جاري تحليل *{sym}*\n(8 مؤشرات + 4 فريمات شموع)...",
