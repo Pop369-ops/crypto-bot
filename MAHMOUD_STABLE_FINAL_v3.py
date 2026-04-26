@@ -1148,7 +1148,12 @@ def ob_fvg_smc(sym):
     return score_b, score_s, sigs
 
 def full_scan(sym):
-    base=run_analysis_sync(sym)
+    """تحليل شامل sync."""
+    try:
+        base = run_analysis_sync(sym)
+    except Exception as e:
+        logging.warning(f"[FULL_SCAN] {sym}: {e}")
+        return None
     if not base or base.get("err"): return None
     sb=base.get("bull",0); ss=base.get("bear",0); price=base.get("price",0)
     obs,oss,sigs=ob_fvg_smc(sym)
@@ -1159,15 +1164,12 @@ def full_scan(sym):
             "base_sigs":base.get("sigs",[]),"ict_sigs":sigs}
 
 def run_analysis_sync(sym):
-    """نسخة sync من run_analysis — يوحّد sl/ss مع bull/bear."""
+    """تحليل sync كامل — يُستدعى من executor."""
     try:
         R = analyze(sym)
         if not R: return None
-        # توحيد المفاتيح
-        if "bull" not in R:
-            R["bull"] = R.get("sl", 0)  # sl = bull signals
-        if "bear" not in R:
-            R["bear"] = R.get("ss", 0)  # ss = bear signals
+        if "bull" not in R: R["bull"] = R.get("sl", 0)
+        if "bear" not in R: R["bear"] = R.get("ss", 0)
         return R
     except Exception as e:
         logging.warning(f"[SYNC] {sym}: {e}")
