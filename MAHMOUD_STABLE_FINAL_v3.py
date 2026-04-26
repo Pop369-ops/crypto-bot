@@ -108,49 +108,43 @@ def resolve_sym(raw: str) -> str:
     return s + "USDT"
 
 def fetch_binance(sym):
-    """جلب كل بيانات Binance Futures لعملة واحدة."""
+    """جلب بيانات Binance — Futures أولاً ثم Spot."""
     out = {
         "price": None, "rate": None, "df": None,
         "ls_long": None, "ls_short": None,
         "oi_chg": None, "liq_l": 0.0, "liq_s": 0.0,
     }
 
-    # 1. السعر + Funding Rate
-    # نجرب Spot أولاً لأن Futures محجوب من بعض السيرفرات
-    price_ok = False
-
-    # Spot API (يعمل من كل مكان)
-    for spot_url in [
-        "https://api.binance.com/api/v3/ticker/price",
-        "https://api1.binance.com/api/v3/ticker/price",
-        "https://api2.binance.com/api/v3/ticker/price",
-        "https://api3.binance.com/api/v3/ticker/price",
-    ]:
-        try:
-            r = api_get(spot_url, {"symbol": sym}, timeout=(5, 10))
+    # ① Futures markPrice
+    try:
+        r = api_get(f"{BASE}/fapi/v1/premiumIndex", {"symbol": sym}, timeout=(5,12))
+        if r and r.status_code == 200:
             d = r.json()
-            if "price" in d:
-                out["price"] = float(d["price"])
-                out["rate"]  = 0.0
-                price_ok = True
-                break
-        except Exception:
-            continue
-
-    # Futures API (للـ Funding Rate)
-    if price_ok:
-        try:
-            r2 = api_get(f"{BASE}/fapi/v1/premiumIndex", {"symbol": sym}, timeout=(5, 10))
-            d2 = r2.json()
-            if isinstance(d2, list): d2 = d2[0]
-            mp = d2.get("markPrice")
+            if isinstance(d, list): d = d[0]
+            mp = d.get("markPrice")
             if mp and float(mp) > 0:
                 out["price"] = float(mp)
-            fr = d2.get("lastFundingRate") or "0"
-            out["rate"] = float(fr) * 100
-        except Exception:
-            pass  # Spot price موجود — نكمل بدون Funding Rate
-    else:
+                out["rate"]  = float(d.get("lastFundingRate","0")) * 100
+    except Exception: pass
+
+    # ② Spot price fallback
+    if not out["price"]:
+        for url in [
+            "https://api.binance.com/api/v3/ticker/price",
+            "https://api1.binance.com/api/v3/ticker/price",
+            "https://api2.binance.com/api/v3/ticker/price",
+        ]:
+            try:
+                r = api_get(url, {"symbol": sym}, timeout=(5,10))
+                if r and r.status_code == 200:
+                    d = r.json()
+                    if "price" in d and float(d["price"]) > 0:
+                        out["price"] = float(d["price"])
+                        out["rate"]  = 0.0
+                        break
+            except Exception: continue
+
+    if not out["price"]:
         raise Exception(f"❌ {sym} غير متاح — تحقق من اسم العملة")
 
     # 2. شموع 1h (60 شمعة للمؤشرات الأساسية)
