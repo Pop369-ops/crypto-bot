@@ -231,7 +231,13 @@ def fetch_onchain(sym):
         safe_gas = float(res.get("SafeGasPrice", 0))
         prop_gas = float(res.get("ProposeGasPrice", 0))
         fast_gas = float(res.get("FastGasPrice", 0))
-        val = f"Gas: {safe_gas:.0f}/{prop_gas:.0f}/{fast_gas:.0f} gwei"
+        # عرض ذكي: لو Gas منخفض جداً (< 1 gwei) نعرض رقمين بعد العلامة
+        # لو Gas طبيعي/مرتفع نعرض رقم صحيح
+        def _g(x):
+            if x < 1:    return f"{x:.2f}"
+            elif x < 10: return f"{x:.1f}"
+            else:        return f"{x:.0f}"
+        val = f"Gas: {_g(safe_gas)}/{_g(prop_gas)}/{_g(fast_gas)} gwei"
         if prop_gas < 5:
             return "🟡", val, "شبكة هادئة جداً — نشاط ضعيف", False, False
         elif prop_gas < 15:
