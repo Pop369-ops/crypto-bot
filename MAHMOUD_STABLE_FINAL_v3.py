@@ -1074,10 +1074,45 @@ def full_scan_sync(sym):
         base=analyze(sym)
         if not base or base.get("err"): return None
         sb,ss,ict_s=ict_score(sym)
-        return {"sym":sym,"bull":base.get("sl",0)+sb,"bear":base.get("ss",0)+ss,
-                "price":base.get("price",0),"tp1":base.get("tp1",0),"tp2":base.get("tp2",0),
-                "tp3":base.get("tp3",0),"sl":base.get("sl_price",0),
-                "base_sigs":base.get("sigs",[]),"ict_sigs":ict_s}
+        price = base.get("price", 0)
+
+        # احصل على SL/TP من analyze() (يستخدم مفتاح "slp" للـ SL)
+        sl_v  = base.get("slp")  or 0
+        tp1_v = base.get("tp1")  or 0
+        tp2_v = base.get("tp2")  or 0
+        tp3_v = 0
+
+        # حساب SL/TP/TP3 بناءً على اتجاه الإشارة (لو analyze ما حدّد action)
+        # نحسب الاتجاه من النقاط: إن البول > البير → LONG، والعكس
+        bull_total = base.get("sl", 0) + sb
+        bear_total = base.get("ss", 0) + ss
+        direction  = "LONG" if bull_total > bear_total else "SHORT"
+
+        # لو SL مش محسوب أو محسوب لاتجاه عكسي، نحسبه من ATR
+        atr = base.get("atr1", 0) or (price * 0.015)  # 1.5% احتياطي
+        if atr > 0:
+            atr_safe = min(atr, price * 0.05)  # حد أقصى 5%
+            if direction == "LONG":
+                # تأكد من اتجاه SL/TP صحيح
+                if not sl_v or sl_v >= price:
+                    sl_v  = round(price - 1.5 * atr_safe, 6)
+                if not tp1_v or tp1_v <= price:
+                    tp1_v = round(price + 1.5 * atr_safe, 6)
+                if not tp2_v or tp2_v <= price:
+                    tp2_v = round(price + 3.0 * atr_safe, 6)
+                tp3_v = round(price + 4.5 * atr_safe, 6)
+            else:  # SHORT
+                if not sl_v or sl_v <= price:
+                    sl_v  = round(price + 1.5 * atr_safe, 6)
+                if not tp1_v or tp1_v >= price:
+                    tp1_v = round(price - 1.5 * atr_safe, 6)
+                if not tp2_v or tp2_v >= price:
+                    tp2_v = round(price - 3.0 * atr_safe, 6)
+                tp3_v = round(price - 4.5 * atr_safe, 6)
+
+        return {"sym": sym, "bull": bull_total, "bear": bear_total,
+                "price": price, "tp1": tp1_v, "tp2": tp2_v, "tp3": tp3_v,
+                "sl": sl_v, "base_sigs": base.get("sigs", []), "ict_sigs": ict_s}
     except Exception as e:
         logging.warning(f"[SCAN] {sym}: {e}")
         return None
@@ -1097,11 +1132,36 @@ def build_scan_alert(r,direction):
         ic=sig[2]; nm=sig[1]; vl=sig[3]
         if (direction=="BUY" and ic=="✅") or (direction=="SELL" and ic=="🔴"):
             m+=f"  {ic} *{nm}:* `{vl}`\n"
-    tp1=r.get("tp1",0); sl=r.get("sl",0)
-    if tp1:
-        m+=f"\n━━━━━━━━━━━━━━━━\n🟢 دخول: `${fmt(price)}`\n"
-        if sl: m+=f"🔴 SL: `${fmt(sl)}`\n"
-        m+=f"💰 TP1: `${fmt(r.get('tp1',0))}`\n💰 TP2: `${fmt(r.get('tp2',0))}`\n🏆 TP3: `${fmt(r.get('tp3',0))}`\n"
+
+    # نتأكد إن SL/TP منطقية
+    sl  = r.get("sl",  0) or 0
+    tp1 = r.get("tp1", 0) or 0
+    tp2 = r.get("tp2", 0) or 0
+    tp3 = r.get("tp3", 0) or 0
+
+    # احتياطي أخير: لو SL لسه 0، نحسبه على شكل ±2% من السعر
+    if not sl or sl <= 0:
+        sl = round(price * (0.98 if direction == "BUY" else 1.02), 6)
+    if not tp1 or tp1 <= 0:
+        tp1 = round(price * (1.015 if direction == "BUY" else 0.985), 6)
+    if not tp2 or tp2 <= 0:
+        tp2 = round(price * (1.03 if direction == "BUY" else 0.97), 6)
+    if not tp3 or tp3 <= 0:
+        tp3 = round(price * (1.045 if direction == "BUY" else 0.955), 6)
+
+    # نسبة المخاطرة/المكافأة
+    risk = abs(price - sl)
+    reward = abs(tp1 - price)
+    rr = (reward / risk) if risk > 0 else 0
+
+    m += f"\n━━━━━━━━━━━━━━━━\n🟢 دخول: `${fmt(price)}`\n"
+    m += f"🛑 SL : `${fmt(sl)}` ({((sl-price)/price*100):+.2f}%)\n"
+    m += f"💰 TP1: `${fmt(tp1)}` ({((tp1-price)/price*100):+.2f}%)\n"
+    m += f"💰 TP2: `${fmt(tp2)}` ({((tp2-price)/price*100):+.2f}%)\n"
+    m += f"🏆 TP3: `${fmt(tp3)}` ({((tp3-price)/price*100):+.2f}%)\n"
+    if rr > 0:
+        m += f"⚖️ R:R = `1:{rr:.2f}`\n"
+
     m+="\n⚠️ _للأغراض التعليمية فقط_"
     return m
 
