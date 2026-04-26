@@ -22,7 +22,6 @@ import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler,
@@ -36,14 +35,14 @@ logging.basicConfig(level=logging.WARNING)
 # ضع التوكن هنا — أو شغّل SETUP.py تلقائياً
 # ==================================================
 import os as _os
-BOT_TOKEN = _os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-ETHERSCAN_KEY  = os.environ.get("ETHERSCAN_KEY", "")
+BOT_TOKEN     = _os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE").strip()
+ETHERSCAN_KEY = (_os.environ.get("ETHERSCAN_KEY", "").strip()
+                 or _os.environ.get("ETHERSCAN_API_KEY", "").strip())
 # ==================================================
 
 BASE        = "https://fapi.binance.com"
 ETH_API     = "https://api.etherscan.io/api"
 watching    = {}
-_scheduler  = None  # APScheduler instance
 open_trades = {}  # {chat_id: {sym: {action,entry,sl,tp1,tp2,tp1_hit}}}
 
 session = requests.Session()
@@ -1260,27 +1259,6 @@ async def run_analysis(sym):
 # Monitor Job — دخول + خروج تلقائي
 # ==================================================
 
-async def _run_monitor(bot, chat_id, sym):
-    """wrapper لـ APScheduler"""
-    try:
-        R      = await run_analysis(sym)
-        if R.get("err"): return
-        price  = R["price"]
-        action = R.get("action","WAIT")
-        trade  = open_trades.get(chat_id, {}).get(sym)
-        if trade:
-            pass  # handled below
-        elif action in ("LONG","SHORT"):
-            msg = build_entry(R, alert=True)
-            kb  = InlineKeyboardMarkup([[
-                InlineKeyboardButton("تحديث", callback_data=f"u:{sym}"),
-                InlineKeyboardButton("تابع",  callback_data=f"w:{sym}"),
-            ]])
-            await bot.send_message(chat_id=chat_id, text=msg,
-                                   parse_mode="Markdown", reply_markup=kb)
-    except Exception:
-        pass
-
 
 async def monitor_job(ctx):
     chat_id = ctx.job.data["chat_id"]
@@ -1384,7 +1362,6 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    global _scheduler
     text    = u.message.text.strip()
     chat_id = u.effective_chat.id
 
@@ -1400,14 +1377,12 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
         try:
             watching.setdefault(chat_id, {})[sym] = True
             jn = f"w_{chat_id}_{sym}"
-            if _scheduler and _scheduler.get_job(jn):
-                _scheduler.remove_job(jn)
-            if _scheduler:
-                bot = c.bot
-                _scheduler.add_job(
-                    _run_monitor, "interval", seconds=900,
-                    args=[bot, chat_id, sym],
-                    id=jn, replace_existing=True)
+            # استخدم job_queue المدمج (متوافق مع event loop)
+            for j in c.job_queue.get_jobs_by_name(jn):
+                j.schedule_removal()
+            c.job_queue.run_repeating(
+                monitor_job, interval=900, first=15,
+                data={"chat_id": chat_id, "sym": sym}, name=jn)
         except Exception as _we:
             await u.message.reply_text(f"⚠️ خطأ: {str(_we)[:80]}")
             return
@@ -1441,8 +1416,8 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
             return
         if parts[1] == "الكل":
             for s in list(watching.get(chat_id, {}).keys()):
-                if _scheduler and _scheduler.get_job(f"w_{chat_id}_{s}"):
-                    _scheduler.remove_job(f"w_{chat_id}_{s}")
+                for j in c.job_queue.get_jobs_by_name(f"w_{chat_id}_{s}"):
+                    j.schedule_removal()
             watching[chat_id]    = {}
             open_trades[chat_id] = {}
             await u.message.reply_text("⛔ تم إيقاف كل المتابعات والصفقات")
@@ -1450,8 +1425,8 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
             sym = parts[1].upper()
             if not sym.endswith("USDT"):
                 sym += "USDT"
-            if _scheduler and _scheduler.get_job(f"w_{chat_id}_{sym}"):
-                _scheduler.remove_job(f"w_{chat_id}_{sym}")
+            for j in c.job_queue.get_jobs_by_name(f"w_{chat_id}_{sym}"):
+                j.schedule_removal()
             watching.get(chat_id, {}).pop(sym, None)
             open_trades.get(chat_id, {}).pop(sym, None)
             await u.message.reply_text(f"⛔ تم إيقاف {sym}")
@@ -1580,7 +1555,6 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_btn(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    global _scheduler
     q       = u.callback_query
     chat_id = q.message.chat_id
     await q.answer()
@@ -1624,23 +1598,30 @@ async def error_handler(update, context):
 # Run
 # ==================================================
 
-def main():
-    if BOT_TOKEN in ("YOUR_BOT_TOKEN_HERE", ""):
-        print("=" * 50)
-        print("  ERROR: لم يتم إدخال Bot Token")
-        print("  شغّل SETUP.py أولاً:")
-        print("  python SETUP.py")
-        print("=" * 50)
-        return
+async def _post_init(app):
+    """يشتغل بعد ما البوت يبدأ الـ event loop — يحذف webhook قديم ويفحص Etherscan"""
+    # ① حذف أي webhook قديم — يمنع Conflict
+    try:
+        await app.bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        logging.warning(f"delete_webhook failed: {e}")
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CallbackQueryHandler(handle_btn))
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, handle_msg))
-    app.add_error_handler(error_handler)
-
-    eth_status = "✅ Fear & Greed Index (مجاني)"
+    # ② فحص Etherscan فعلياً
+    eth_status = "❌ غير مفعّل"
+    if ETHERSCAN_KEY:
+        try:
+            r = session.get(
+                "https://api.etherscan.io/api",
+                params={"module": "stats", "action": "ethsupply", "apikey": ETHERSCAN_KEY},
+                timeout=(5, 10),
+            )
+            j = r.json()
+            if j.get("status") == "1":
+                eth_status = "✅ مفعّل"
+            else:
+                eth_status = f"⚠️ {j.get('message', 'unknown')}"
+        except Exception as e:
+            eth_status = f"⚠️ {type(e).__name__}"
 
     print("=" * 55)
     print("  MAHMOUD TRADING BOT v3 — Running ✅")
@@ -1649,18 +1630,39 @@ def main():
     print(f"  الشموع   : 15m | 1h | 4h | 1d")
     print(f"  الأنماط  : 10 نمط صاعد وهابط")
     print(f"  Etherscan: {eth_status}")
+    print(f"  Sentiment: ✅ Fear & Greed Index (مجاني)")
     print(f"  الخروج   : SL / TP1 / TP2 / انعكاس")
     print(f"  الحد     : 5/8 إشارات للدخول")
     print("=" * 55)
     print("  أرسل /start على تيليقرام")
     print("=" * 55)
 
-    global _scheduler
-    _scheduler = AsyncIOScheduler(timezone="UTC")
-    _scheduler.start()
 
-    app.run_polling(drop_pending_updates=True,
-                    allowed_updates=Update.ALL_TYPES)
+def main():
+    if BOT_TOKEN in ("YOUR_BOT_TOKEN_HERE", ""):
+        print("=" * 50)
+        print("  ERROR: لم يتم إدخال Bot Token")
+        print("  أضفه في Railway → Variables → BOT_TOKEN")
+        print("=" * 50)
+        return
+
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .post_init(_post_init)
+        .build()
+    )
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CallbackQueryHandler(handle_btn))
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, handle_msg))
+    app.add_error_handler(error_handler)
+
+    # ملاحظة: ما نستخدم AsyncIOScheduler — JobQueue المدمج كافٍ ومتوافق مع event loop
+    app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES,
+    )
 
 
 if __name__ == "__main__":
