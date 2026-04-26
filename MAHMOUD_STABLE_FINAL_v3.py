@@ -205,28 +205,73 @@ def fetch_tf(sym, interval, limit):
     return None
 
 def fetch_onchain(sym):
-    """Fear & Greed Index + BTC Dominance (مجاني بدون API Key)"""
+    """
+    On-Chain Gas Oracle من Etherscan فقط (المؤشر #7).
+    - Gas منخفض = شبكة هادئة = نشاط أقل
+    - Gas مرتفع = شبكة مزدحمة = طلب عالي
+    """
+    if not ETHERSCAN_KEY or ETHERSCAN_KEY in ("YOUR_ETHERSCAN_KEY_HERE", "NO_KEY", ""):
+        return "❓", "غير مفعّل", "أضف ETHERSCAN_KEY", False, False
+    try:
+        r = session.get(
+            ETH_API,
+            params={"module":"gastracker","action":"gasoracle","apikey":ETHERSCAN_KEY},
+            timeout=(5,10),
+        )
+        j = r.json()
+        if j.get("status") != "1" or not j.get("result"):
+            return "⚪", "Etherscan: N/A", "", False, False
+        res = j["result"]
+        safe_gas = float(res.get("SafeGasPrice", 0))
+        prop_gas = float(res.get("ProposeGasPrice", 0))
+        fast_gas = float(res.get("FastGasPrice", 0))
+        val = f"Gas: {safe_gas:.0f}/{prop_gas:.0f}/{fast_gas:.0f} gwei"
+        if prop_gas < 5:
+            return "🟡", val, "شبكة هادئة جداً — نشاط ضعيف", False, False
+        elif prop_gas < 15:
+            return "⚪", val, "نشاط طبيعي", False, False
+        elif prop_gas < 40:
+            return "✅", val, "نشاط مرتفع — طلب صحي", True, False
+        elif prop_gas < 80:
+            return "🔥", val, "ازدحام — طلب قوي", True, False
+        else:
+            return "🔴", val, "ازدحام شديد — احذر FOMO", False, True
+    except Exception as e:
+        logging.warning(f"[ONCHAIN] {e}")
+        return "⚪", "Etherscan: خطأ", "", False, False
+
+
+def fetch_sentiment(sym):
+    """
+    Fear & Greed Index من alternative.me (المؤشر #8 الجديد).
+    مؤشر مزاج السوق العام للكريبتو.
+    """
     try:
         r = session.get("https://api.alternative.me/fng/",
-                        params={"limit": 1}, timeout=(5,10))
+                        params={"limit":1}, timeout=(5,10))
         d = r.json()
         fg = int(d["data"][0]["value"])
         fc = d["data"][0]["value_classification"]
-        val = f"Fear&Greed: {fg}/100 ({fc})"
-        if fg <= 20:   return "✅", val, "خوف شديد = فرصة شراء", True, False
-        elif fg <= 40: return "🟡", val, "خوف = سوق ضعيف", True, False
-        elif fg >= 80: return "🔴", val, "جشع شديد = احذر الذروة", False, True
-        elif fg >= 60: return "🟡", val, "جشع = احذر", False, False
-        else:          return "⚪", val, "محايد", False, False
+        val = f"F&G: {fg}/100 ({fc})"
+        if fg <= 20:
+            return "✅", val, "خوف شديد = فرصة شراء", True, False
+        elif fg <= 40:
+            return "🟡", val, "خوف = حذر، فرصة محتملة", False, False
+        elif fg <= 55:
+            return "⚪", val, "محايد", False, False
+        elif fg < 75:
+            return "🟡", val, "جشع = احذر القمة", False, False
+        else:
+            return "🔴", val, "جشع شديد = احذر التصحيح", False, True
     except Exception:
+        # احتياطي: BTC Dominance
         try:
-            r2 = session.get("https://api.coingecko.com/api/v3/global",
-                             timeout=(5,10))
+            r2 = session.get("https://api.coingecko.com/api/v3/global", timeout=(5,10))
             dom = r2.json().get("data",{}).get("market_cap_percentage",{}).get("btc",50)
             val2 = f"BTC Dom: {dom:.1f}%"
-            if dom > 55:   return "🔴", val2, "هيمنة BTC عالية", False, True
+            if dom > 55: return "🔴", val2, "هيمنة BTC عالية", False, True
             elif dom < 45: return "✅", val2, "Altcoin Season", True, False
-            else:          return "⚪", val2, "سوق متوازن", False, False
+            else: return "⚪", val2, "متوازن", False, False
         except Exception:
             return "⚪", "Sentiment: N/A", "", False, False
 
@@ -766,7 +811,15 @@ def analyze(sym):
             R["ss"] += 1
         R["sigs"].append(("7","On-Chain ⛓",oc_icon,oc_val,oc_note))
 
-        # ─── 8. Candlestick Patterns MTF ───
+        # ─── 8. Fear & Greed Sentiment ───
+        fg_icon, fg_val, fg_note, fg_bull, fg_bear = fetch_sentiment(sym)
+        if fg_bull:
+            R["sl"] += 1
+        elif fg_bear:
+            R["ss"] += 1
+        R["sigs"].append(("8","Fear & Greed 🧠",fg_icon,fg_val,fg_note))
+
+        # ─── 9. Candlestick Patterns MTF ───
         try:
             tf_res, bt, brt = analyze_mtf(sym)
             tf_line = " | ".join(f"{lb}:{ic}" for lb,ic,_ in tf_res)
@@ -775,22 +828,22 @@ def analyze(sym):
 
             if bt >= 3:
                 R["sl"] += 1
-                R["sigs"].append(("8","شموع MTF","✅",
+                R["sigs"].append(("9","شموع MTF","✅",
                     tf_line, f"{bt}/4 فريمات صاعدة — {pat_str}"))
             elif brt >= 3:
                 R["ss"] += 1
-                R["sigs"].append(("8","شموع MTF","🔴",
+                R["sigs"].append(("9","شموع MTF","🔴",
                     tf_line, f"{brt}/4 فريمات هابطة — {pat_str}"))
             elif bt == 2 and brt == 0:
-                R["sigs"].append(("8","شموع MTF","🟡",
+                R["sigs"].append(("9","شموع MTF","🟡",
                     tf_line, f"صاعد ضعيف — {pat_str}"))
             elif brt == 2 and bt == 0:
-                R["sigs"].append(("8","شموع MTF","🟡",
+                R["sigs"].append(("9","شموع MTF","🟡",
                     tf_line, f"هابط ضعيف — {pat_str}"))
             else:
-                R["sigs"].append(("8","شموع MTF","⚪",tf_line,"محايد"))
+                R["sigs"].append(("9","شموع MTF","⚪",tf_line,"محايد"))
         except Exception:
-            R["sigs"].append(("8","شموع MTF","❓","خطأ في الجلب",""))
+            R["sigs"].append(("9","شموع MTF","❓","خطأ في الجلب",""))
 
         # ─── القرار: 5 من 8 ───
         sl = R["sl"];  ss = R["ss"]
@@ -1401,12 +1454,13 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
     eth_status = "✅ متصل" if ETHERSCAN_KEY not in ("YOUR_ETHERSCAN_KEY_HERE","NO_KEY","") else "❌ غير مفعّل"
     await u.message.reply_text(
         "👋 *MAHMOUD TRADING BOT v3*\n\n"
-        "📊 *8 مؤشرات:*\n"
+        "📊 *9 مؤشرات:*\n"
         "① Funding Rate | ② Open Interest\n"
         "③ Long/Short | ④ EMA + Volume\n"
         "⑤ Liquidations | ⑥ CVD\n"
-        f"⑦ On-Chain (Etherscan) {eth_status}\n"
-        "⑧ شموع MTF (15m|1h|4h|1d)\n\n"
+        f"⑦ On-Chain ⛓ (Etherscan Gas) {eth_status}\n"
+        "⑧ Fear & Greed 🧠 (Sentiment)\n"
+        "⑨ شموع MTF (15m|1h|4h|1d)\n\n"
         "━━━━━━━━━━━━━━━━\n"
         "📈 *تحليل فوري:*\n"
         "أرسل: `BTC` أو `ETH` أو `SOL` أو أي عملة\n\n"
@@ -1615,7 +1669,7 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
     sym = resolve_sym(text)
 
     wait = await u.message.reply_text(
-        f"⏳ جاري تحليل *{sym}*\n(8 مؤشرات + 4 فريمات شموع)...",
+        f"⏳ جاري تحليل *{sym}*\n(9 مؤشرات + 4 فريمات شموع)...",
         parse_mode="Markdown")
     R = await run_analysis(sym)
     await wait.delete()
@@ -1695,13 +1749,13 @@ async def _post_init(app):
     print("=" * 55)
     print("  MAHMOUD TRADING BOT v3 — Running ✅")
     print("=" * 55)
-    print(f"  المؤشرات : 8 مؤشرات")
+    print(f"  المؤشرات : 9 مؤشرات")
     print(f"  الشموع   : 15m | 1h | 4h | 1d")
     print(f"  الأنماط  : 10 نمط صاعد وهابط")
     print(f"  Etherscan: {eth_status}")
     print(f"  Sentiment: ✅ Fear & Greed Index (مجاني)")
     print(f"  الخروج   : SL / TP1 / TP2 / انعكاس")
-    print(f"  الحد     : 5/8 إشارات للدخول")
+    print(f"  الحد     : 5/9 إشارات للدخول")
     print("=" * 55)
     print("  أرسل /start على تيليقرام")
     print("=" * 55)
