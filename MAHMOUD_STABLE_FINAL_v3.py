@@ -121,7 +121,9 @@ def fetch_binance(sym):
     except: pass
 
     if not out["price"]:
-        raise Exception(f"❌ {sym} غير متاح — تحقق من اسم العملة")
+        # لعلها ليست في Futures — أعطِ رسالة مفيدة
+        raise Exception(f"❌ {sym} غير موجودة على Binance Futures\n"
+                        f"جرب: BTC ETH SOL BNB أو اسم العملة الكامل")
 
     # 2. شموع 1h (60 شمعة للمؤشرات الأساسية)
     try:
@@ -1485,8 +1487,15 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
         for j in c.job_queue.get_jobs_by_name(jn): j.schedule_removal()
         c.job_queue.run_repeating(auto_scanner_job,interval=1800,first=30,
             data={"chat_id":chat_id,"min_score":min_sc},name=jn)
-        try: total=len(scan_lists.get(chat_id,[]) or get_futures_syms())
-        except: total=350
+        try:
+            _sl = scan_lists.get(chat_id,[])
+            if _sl:
+                total = len(_sl)
+            else:
+                _all = get_futures_syms()
+                total = len(_all) if _all else 350
+        except:
+            total = 350
         await u.message.reply_text(
             f"🔍 *تم تفعيل الماسح الذكي*\n\n"
             f"⏱ كل 30 دقيقة | 📊 {total} عملة\n"
