@@ -21,7 +21,7 @@ import logging
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -37,7 +37,7 @@ logging.basicConfig(level=logging.WARNING)
 # ==================================================
 import os as _os
 BOT_TOKEN = _os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-ETHERSCAN_KEY  = os.environ.get("ETHERSCAN_KEY", "YOUR_ETHERSCAN_KEY_HERE")
+ETHERSCAN_KEY  = os.environ.get("ETHERSCAN_KEY", "")
 # ==================================================
 
 BASE        = "https://fapi.binance.com"
@@ -52,6 +52,40 @@ session.mount("https://", adapter)
 session.mount("http://",  adapter)
 
 
+
+# ── قاموس شامل للعملات ──
+_ALIASES = {
+    "BTC":"BTCUSDT","ETH":"ETHUSDT","SOL":"SOLUSDT","BNB":"BNBUSDT",
+    "XRP":"XRPUSDT","ADA":"ADAUSDT","AVAX":"AVAXUSDT","DOT":"DOTUSDT",
+    "LINK":"LINKUSDT","MATIC":"MATICUSDT","POL":"POLUSDT",
+    "OP":"OPUSDT","ARB":"ARBUSDT","SUI":"SUIUSDT","SEI":"SEIUSDT",
+    "APT":"APTUSDT","INJ":"INJUSDT","TIA":"TIAUSDT","NEAR":"NEARUSDT",
+    "ATOM":"ATOMUSDT","FTM":"FTMUSDT","S":"SUSDT",
+    "UNI":"UNIUSDT","AAVE":"AAVEUSDT","MKR":"MKRUSDT","CRV":"CRVUSDT",
+    "LDO":"LDOUSDT","COMP":"COMPUSDT","SNX":"SNXUSDT",
+    "RENDER":"RENDERUSDT","RNDR":"RENDERUSDT","FET":"FETUSDT",
+    "AGIX":"AGIXUSDT","OCEAN":"OCEANUSDT","TAO":"TAOUSDT",
+    "AXS":"AXSUSDT","SAND":"SANDUSDT","MANA":"MANAUSDT",
+    "IMX":"IMXUSDT","GALA":"GALAUSDT",
+    "DOGE":"DOGEUSDT","SHIB":"SHIBUSDT","PEPE":"PEPEUSDT",
+    "FLOKI":"FLOKIUSDT","BONK":"BONKUSDT","BOME":"BOMEUSDT",
+    "WIF":"WIFUSDT","POPCAT":"POPCATUSDT","MEW":"MEWUSDT",
+    "NEIRO":"NEIROUSDT","MOG":"MOGUSDT","TURBO":"TURBOUSDT",
+    "1000PEPE":"1000PEPEUSDT","1000SHIB":"1000SHIBUSDT",
+    "ORCA":"ORCAUSDT","JUP":"JUPUSDT","PYTH":"PYTHUSDT",
+    "JITO":"JITOUSDT","RAY":"RAYUSDT",
+    "HYPE":"HYPEUSDT","HYPR":"HYPRUSDT","CHIP":"CHIPUSDT",
+    "ZK":"ZKUSDT","EIGEN":"EIGENUSDT","IO":"IOUSDT",
+    "STRK":"STRKUSDT","ALT":"ALTUSDT","W":"WUSDT",
+    "OPG":"OPGUSDT","LSTART":"LSTARTUSDT",
+}
+
+def resolve_sym(raw:str)->str:
+    s=raw.upper().strip()
+    if s in _ALIASES: return _ALIASES[s]
+    if any(s.endswith(x) for x in ("USDT","USDC","BTC","ETH")): return s
+    return s+"USDT"
+
 def api_get(url, params=None, timeout=(4, 8)):
     return session.get(url, params=params, timeout=timeout)
 
@@ -60,89 +94,41 @@ def api_get(url, params=None, timeout=(4, 8)):
 # Binance — جلب البيانات
 # ==================================================
 
-
-# ── قاموس شامل لكل العملات الشائعة ──
-_ALIASES = {
-    "BTC":"BTCUSDT","ETH":"ETHUSDT","SOL":"SOLUSDT","BNB":"BNBUSDT",
-    "XRP":"XRPUSDT","ADA":"ADAUSDT","AVAX":"AVAXUSDT","DOT":"DOTUSDT",
-    "LINK":"LINKUSDT","MATIC":"MATICUSDT","POL":"POLUSDT",
-    "OP":"OPUSDT","ARB":"ARBUSDT","SUI":"SUIUSDT","SEI":"SEIUSDT",
-    "APT":"APTUSDT","INJ":"INJUSDT","TIA":"TIAUSDT","NEAR":"NEARUSDT",
-    "ATOM":"ATOMUSDT","FTM":"FTMUSDT","S":"SUSDT",
-    # DeFi
-    "UNI":"UNIUSDT","AAVE":"AAVEUSDT","MKR":"MKRUSDT","CRV":"CRVUSDT",
-    "LDO":"LDOUSDT","COMP":"COMPUSDT","SNX":"SNXUSDT",
-    # AI/Compute
-    "RENDER":"RENDERUSDT","RNDR":"RENDERUSDT","FET":"FETUSDT",
-    "AGIX":"AGIXUSDT","OCEAN":"OCEANUSDT","TAO":"TAOUSDT",
-    # Gaming/NFT
-    "AXS":"AXSUSDT","SAND":"SANDUSDT","MANA":"MANAUSDT",
-    "IMX":"IMXUSDT","GALA":"GALAUSDT",
-    # Memecoins
-    "DOGE":"DOGEUSDT","SHIB":"SHIBUSDT","PEPE":"PEPEUSDT",
-    "FLOKI":"FLOKIUSDT","BONK":"BONKUSDT","BOME":"BOMEUSDT",
-    "WIF":"WIFUSDT","POPCAT":"POPCATUSDT","MEW":"MEWUSDT",
-    "NEIRO":"NEIROUSDT","MOG":"MOGUSDT","TURBO":"TURBOUSDT",
-    "1000PEPE":"1000PEPEUSDT","1000SHIB":"1000SHIBUSDT",
-    "1000BONK":"1000BONKUSDT","SATS":"1000SATSUSDT",
-    # DEX/Solana
-    "ORCA":"ORCAUSDT","JUP":"JUPUSDT","PYTH":"PYTHUSDT",
-    "JITO":"JITOUSDT","RAY":"RAYUSDT","DRIFT":"DRIFTUSDT",
-    # Special
-    "HYPE":"HYPEUSDT","HYPR":"HYPRUSDT","CHIP":"CHIPUSDT",
-    "OKB":"OKBUSDT","GT":"GTUSDT","CRO":"CROUSDT",
-    # New
-    "ZK":"ZKUSDT","EIGEN":"EIGENUSDT","IO":"IOUSDT",
-    "ZEUS":"ZEUSUSDT","JUP":"JUPUSDT","W":"WUSDT",
-    "STRK":"STRKUSDT","ALT":"ALTUSDT","MANTA":"MANTAUSDT",
-    "PORTAL":"PORTALUSDT","PIXEL":"PIXELUSDT","SAGA":"SAGAUSDT",
-}
-
-def resolve_sym(raw: str) -> str:
-    """تحويل اسم مختصر لرمز Binance الصحيح."""
-    s = raw.upper().strip()
-    if s in _ALIASES:
-        return _ALIASES[s]
-    if any(s.endswith(x) for x in ("USDT","USDC","BTC","ETH","BUSD")):
-        return s
-    return s + "USDT"
-
 def fetch_binance(sym):
     """جلب بيانات Binance — Futures أولاً ثم Spot."""
-    out = {
-        "price": None, "rate": None, "df": None,
-        "ls_long": None, "ls_short": None,
-        "oi_chg": None, "liq_l": 0.0, "liq_s": 0.0,
-    }
+    out = {"price":None,"rate":None,"df":None,
+           "ls_long":None,"ls_short":None,
+           "oi_chg":None,"liq_l":0.0,"liq_s":0.0}
 
-    # ① Futures markPrice
-    try:
-        r = api_get(f"{BASE}/fapi/v1/premiumIndex", {"symbol": sym}, timeout=(5,12))
-        if r and r.status_code == 200:
-            d = r.json()
-            if isinstance(d, list): d = d[0]
-            mp = d.get("markPrice")
-            if mp and float(mp) > 0:
-                out["price"] = float(mp)
-                out["rate"]  = float(d.get("lastFundingRate","0")) * 100
-    except Exception: pass
+    # Futures
+    for url in [f"{BASE}/fapi/v1/premiumIndex",
+                f"{BASE}/fapi/v2/premiumIndex"]:
+        try:
+            r = api_get(url, {"symbol":sym}, timeout=(6,15))
+            if r and r.status_code == 200:
+                d = r.json()
+                if isinstance(d,list): d = d[0]
+                mp = d.get("markPrice")
+                if mp and float(mp)>0:
+                    out["price"] = float(mp)
+                    out["rate"]  = float(d.get("lastFundingRate","0"))*100
+                    break
+        except: continue
 
-    # ② Spot price fallback
+    # Spot fallback
     if not out["price"]:
-        for url in [
-            "https://api.binance.com/api/v3/ticker/price",
-            "https://api1.binance.com/api/v3/ticker/price",
-            "https://api2.binance.com/api/v3/ticker/price",
-        ]:
+        for url in ["https://api.binance.com/api/v3/ticker/price",
+                    "https://api1.binance.com/api/v3/ticker/price",
+                    "https://api2.binance.com/api/v3/ticker/price"]:
             try:
-                r = api_get(url, {"symbol": sym}, timeout=(5,10))
-                if r and r.status_code == 200:
+                r = api_get(url, {"symbol":sym}, timeout=(6,12))
+                if r and r.status_code==200:
                     d = r.json()
-                    if "price" in d and float(d["price"]) > 0:
+                    if "price" in d and float(d["price"])>0:
                         out["price"] = float(d["price"])
                         out["rate"]  = 0.0
                         break
-            except Exception: continue
+            except: continue
 
     if not out["price"]:
         raise Exception(f"❌ {sym} غير متاح — تحقق من اسم العملة")
@@ -209,14 +195,23 @@ def fetch_binance(sym):
 
 
 def fetch_tf(sym, interval, limit):
-    """جلب شموع لفريم محدد."""
-    r  = api_get(f"{BASE}/fapi/v1/klines",
-                 {"symbol": sym, "interval": interval, "limit": limit})
-    df = pd.DataFrame(r.json(), columns=[
-        "t","o","h","l","c","v","ct","qv","tr","bb","bq","ig"])
-    for col in ["o","h","l","c","v"]:
-        df[col] = df[col].astype(float)
-    return df
+    """جلب شموع Futures ثم Spot."""
+    cols = ["t","o","h","l","c","v","ct","qv","tr","bb","bq","ig"]
+    nums = ["o","h","l","c","v","qv","bb","bq"]
+    for url in [f"{BASE}/fapi/v1/klines",
+                "https://api.binance.com/api/v3/klines",
+                "https://api1.binance.com/api/v3/klines"]:
+        try:
+            r = api_get(url,{"symbol":sym,"interval":interval,"limit":limit},timeout=(6,15))
+            if r and r.status_code==200:
+                data=r.json()
+                if isinstance(data,list) and len(data)>3:
+                    df=pd.DataFrame(data,columns=cols)
+                    for col in nums:
+                        df[col]=pd.to_numeric(df[col],errors="coerce").fillna(0)
+                    return df
+        except: pass
+    return None
 
 
 # ==================================================
@@ -751,12 +746,12 @@ def analyze(sym):
         # ─── 6. CVD ───
         if df is not None:
             try:
-                d2         = df.copy()
-                d2["dlta"] = d2["bq"] - (d2["qv"] - d2["bq"])
-                d2["cvd"]  = d2["dlta"].cumsum()
-                cn2 = d2["cvd"].iloc[-1]
-                cp2 = d2["cvd"].iloc[-6]
-                pd2 = df["c"].iloc[-1] - df["c"].iloc[-6]
+                _bq=pd.to_numeric(df["bq"],errors="coerce").fillna(0)
+                _qv=pd.to_numeric(df["qv"],errors="coerce").fillna(0)
+                if _bq.sum()==0: raise ValueError("bq=0")
+                _dlta=_bq-(_qv-_bq); _cvd=_dlta.cumsum()
+                cn2=float(_cvd.iloc[-1]); cp2=float(_cvd.iloc[-6])
+                pd2=float(df["c"].iloc[-1])-float(df["c"].iloc[-6])
                 if cn2 > cp2 and pd2 > 0:
                     R["sl"] += 1
                     R["sigs"].append(("6","CVD","✅",
@@ -879,509 +874,6 @@ def analyze(sym):
     return R
 
 
-
-
-# ╔══════════════════════════════════════════════════════════════╗
-# ║      AUTO SCANNER — ماسح ذكي بمؤشرات ICT + SMC            ║
-# ║  المؤشرات:                                                   ║
-# ║  ① المؤشرات الأساسية الـ 8 (من run_analysis)               ║
-# ║  ② Order Block — مناطق القرار الكبرى                        ║
-# ║  ③ Fair Value Gap (FVG) — فجوات السعر                      ║
-# ║  ④ Smart Money — تتبع الأموال الذكية                        ║
-# ║  ⑤ ICP — نقطة الانجذاب المثالية للسعر                      ║
-# ╚══════════════════════════════════════════════════════════════╝
-
-import time as _time_mod
-
-# عملات مستبعدة
-_SCAN_EXCLUDED = {
-    "USDTUSDT","BUSDUSDT","USDCUSDT","DAIUSDT","TUSDUSDT",
-    "FDUSDUSDT","WBTCUSDT","WETHUSDT","STETHUSDT",
-}
-
-# كاش قائمة العملات
-_all_futures_cache: list = []
-_cache_ts: float = 0
-
-def get_all_futures_symbols() -> list:
-    """جلب كل رموز Binance Futures USDT ديناميكياً."""
-    global _all_futures_cache, _cache_ts
-    import time as _t
-    # تحديث كل ساعة
-    if _all_futures_cache and (_t.time() - _cache_ts) < 3600:
-        return _all_futures_cache
-    try:
-        for url in [
-            f"{BASE}/fapi/v1/ticker/24hr",
-            "https://fapi.binance.com/fapi/v1/ticker/24hr",
-        ]:
-            r = api_get(url, timeout=(12, 30))
-            if r and r.status_code == 200:
-                syms = []
-                for t in r.json():
-                    s = t.get("symbol","")
-                    if s.endswith("USDT") and s not in _SCAN_EXCLUDED:
-                        syms.append(s)
-                if syms:
-                    _all_futures_cache = sorted(syms)
-                    _cache_ts = _t.time()
-                    logging.warning(f"[SCAN_LIST] {len(syms)} عملة Futures")
-                    return syms
-    except Exception as e:
-        logging.warning(f"[SCAN_LIST] {e}")
-    # fallback
-    return _all_futures_cache or ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT"]
-
-DEFAULT_SCAN_LIST = []  # يُجلب ديناميكياً
-
-scan_lists:   dict = {}
-scan_alerted: dict = {}
-SCAN_COOLDOWN = 7200
-
-
-# ══════════════════════════════════════════════════════════════
-# ICT / SMC FUNCTIONS
-# ══════════════════════════════════════════════════════════════
-
-def detect_order_blocks(df, lookback=50):
-    """
-    Order Block: آخر شمعة هابطة قبل حركة صاعدة قوية (Bullish OB)
-    أو آخر شمعة صاعدة قبل حركة هابطة قوية (Bearish OB).
-    """
-    try:
-        c = pd.to_numeric(df["c"], errors="coerce")
-        o = pd.to_numeric(df["o"], errors="coerce")
-        h = pd.to_numeric(df["h"], errors="coerce")
-        l = pd.to_numeric(df["l"], errors="coerce")
-        v = pd.to_numeric(df["v"], errors="coerce")
-        price = float(c.iloc[-1])
-
-        bull_obs = []  # Bullish Order Blocks
-        bear_obs = []  # Bearish Order Blocks
-
-        for i in range(2, min(lookback, len(df)-2)):
-            idx = -(i+1)
-            is_bear_candle = float(c.iloc[idx]) < float(o.iloc[idx])
-            is_bull_candle = float(c.iloc[idx]) > float(o.iloc[idx])
-
-            # حجم الحركة بعد الشمعة
-            move_after = abs(float(c.iloc[idx+3]) - float(c.iloc[idx+1]))
-            avg_move   = float(abs(c.diff()).iloc[-20:].mean())
-
-            # Bullish OB: شمعة هابطة تليها حركة صاعدة قوية
-            if is_bear_candle and move_after > avg_move * 1.5:
-                if float(c.iloc[idx+3]) > float(c.iloc[idx]):
-                    ob_top = max(float(o.iloc[idx]), float(c.iloc[idx]))
-                    ob_bot = min(float(o.iloc[idx]), float(c.iloc[idx]))
-                    bull_obs.append({
-                        "top":    ob_top,
-                        "bot":    ob_bot,
-                        "vol":    float(v.iloc[idx]),
-                        "age":    i,
-                    })
-
-            # Bearish OB: شمعة صاعدة تليها حركة هابطة قوية
-            if is_bull_candle and move_after > avg_move * 1.5:
-                if float(c.iloc[idx+3]) < float(c.iloc[idx]):
-                    ob_top = max(float(o.iloc[idx]), float(c.iloc[idx]))
-                    ob_bot = min(float(o.iloc[idx]), float(c.iloc[idx]))
-                    bear_obs.append({
-                        "top":    ob_top,
-                        "bot":    ob_bot,
-                        "vol":    float(v.iloc[idx]),
-                        "age":    i,
-                    })
-
-        # هل السعر عند Order Block؟
-        in_bull_ob = any(ob["bot"] <= price <= ob["top"] * 1.01 for ob in bull_obs[:3])
-        in_bear_ob = any(ob["bot"] * 0.99 <= price <= ob["top"] for ob in bear_obs[:3])
-
-        return {
-            "bull_obs":   bull_obs[:3],
-            "bear_obs":   bear_obs[:3],
-            "in_bull_ob": in_bull_ob,
-            "in_bear_ob": in_bear_ob,
-            "price":      price,
-        }
-    except Exception as e:
-        return {"bull_obs":[],"bear_obs":[],"in_bull_ob":False,"in_bear_ob":False,"price":0}
-
-
-def detect_fvg(df, min_gap_pct=0.1):
-    """
-    Fair Value Gap (FVG): فجوة بين wick شمعة 1 وbody شمعة 3.
-    Bullish FVG: low[i] > high[i-2] — فجوة صاعدة
-    Bearish FVG: high[i] < low[i-2] — فجوة هابطة
-    """
-    try:
-        h = pd.to_numeric(df["h"], errors="coerce")
-        l = pd.to_numeric(df["l"], errors="coerce")
-        c = pd.to_numeric(df["c"], errors="coerce")
-        price = float(c.iloc[-1])
-
-        bull_fvgs = []
-        bear_fvgs = []
-
-        for i in range(2, min(30, len(df)-1)):
-            idx = -i
-            # Bullish FVG: فجوة صاعدة
-            fvg_low  = float(l.iloc[idx])
-            fvg_high = float(h.iloc[idx-2])
-            if fvg_low > fvg_high:
-                gap_pct = (fvg_low - fvg_high) / fvg_high * 100
-                if gap_pct >= min_gap_pct:
-                    bull_fvgs.append({
-                        "top":     fvg_low,
-                        "bot":     fvg_high,
-                        "gap_pct": gap_pct,
-                        "age":     i,
-                        "filled":  price <= fvg_low,  # هل السعر داخل الفجوة؟
-                    })
-
-            # Bearish FVG: فجوة هابطة
-            fvg_high2 = float(h.iloc[idx])
-            fvg_low2  = float(l.iloc[idx-2])
-            if fvg_high2 < fvg_low2:
-                gap_pct2 = (fvg_low2 - fvg_high2) / fvg_high2 * 100
-                if gap_pct2 >= min_gap_pct:
-                    bear_fvgs.append({
-                        "top":     fvg_low2,
-                        "bot":     fvg_high2,
-                        "gap_pct": gap_pct2,
-                        "age":     i,
-                        "filled":  price >= fvg_high2,
-                    })
-
-        # هل السعر عند FVG غير مملوء؟
-        at_bull_fvg = any(
-            f["bot"] <= price <= f["top"] and not f["filled"]
-            for f in bull_fvgs[:3]
-        )
-        at_bear_fvg = any(
-            f["bot"] <= price <= f["top"] and not f["filled"]
-            for f in bear_fvgs[:3]
-        )
-
-        return {
-            "bull_fvgs":   bull_fvgs[:3],
-            "bear_fvgs":   bear_fvgs[:3],
-            "at_bull_fvg": at_bull_fvg,
-            "at_bear_fvg": at_bear_fvg,
-        }
-    except Exception:
-        return {"bull_fvgs":[],"bear_fvgs":[],"at_bull_fvg":False,"at_bear_fvg":False}
-
-
-def detect_smart_money(df):
-    """
-    Smart Money Concepts:
-    - BOS (Break of Structure): كسر هيكل السوق
-    - CHoCH (Change of Character): تغيير طابع السوق
-    - Sweep: اصطياد السيولة تحت القيعان أو فوق القمم
-    """
-    try:
-        h = pd.to_numeric(df["h"], errors="coerce")
-        l = pd.to_numeric(df["l"], errors="coerce")
-        c = pd.to_numeric(df["c"], errors="coerce")
-        price = float(c.iloc[-1])
-
-        # آخر 20 شمعة لتحديد الهيكل
-        recent_h = h.iloc[-20:]
-        recent_l = l.iloc[-20:]
-
-        # القمم والقيعان الهيكلية
-        structure_high = float(recent_h.max())
-        structure_low  = float(recent_l.min())
-        prev_high      = float(h.iloc[-5:-1].max())
-        prev_low       = float(l.iloc[-5:-1].min())
-
-        signals = []
-        score   = 0
-
-        # BOS صاعد: السعر كسر أعلى هيكل
-        if price > structure_high * 0.998:
-            score += 3
-            signals.append("🚀 BOS صاعد — كسر هيكل للأعلى")
-
-        # BOS هابط: السعر كسر أدنى هيكل
-        elif price < structure_low * 1.002:
-            score -= 3
-            signals.append("📉 BOS هابط — كسر هيكل للأسفل")
-
-        # CHoCH: السعر كان هابطاً ثم كسر قمة سابقة
-        if float(c.iloc[-3]) < float(c.iloc[-5]) and price > prev_high:
-            score += 2
-            signals.append("🔄 CHoCH صاعد — تغيير طابع السوق")
-        elif float(c.iloc[-3]) > float(c.iloc[-5]) and price < prev_low:
-            score -= 2
-            signals.append("🔄 CHoCH هابط — تغيير طابع السوق")
-
-        # Liquidity Sweep: اختراق قاع ثم ارتداد (Bull Sweep)
-        if float(l.iloc[-2]) < structure_low and price > structure_low:
-            score += 3
-            signals.append("💎 Bull Sweep — اصطياد سيولة صاعد")
-
-        # Liquidity Sweep: اختراق قمة ثم انعكاس (Bear Sweep)
-        if float(h.iloc[-2]) > structure_high and price < structure_high:
-            score -= 3
-            signals.append("🐻 Bear Sweep — اصطياد سيولة هابط")
-
-        return {
-            "score":          score,
-            "signals":        signals,
-            "structure_high": structure_high,
-            "structure_low":  structure_low,
-            "bull":           score > 0,
-            "bear":           score < 0,
-        }
-    except Exception:
-        return {"score":0,"signals":[],"structure_high":0,"structure_low":0,"bull":False,"bear":False}
-
-
-def detect_icp(df):
-    """
-    ICP — Ideal Continuation Point (نقطة الاستمرار المثالية):
-    السعر يتراجع إلى 50% Fibonacci من آخر حركة كبيرة
-    مع وجود Order Block أو FVG عند نفس المنطقة.
-    """
-    try:
-        h = pd.to_numeric(df["h"], errors="coerce")
-        l = pd.to_numeric(df["l"], errors="coerce")
-        c = pd.to_numeric(df["c"], errors="coerce")
-        price = float(c.iloc[-1])
-
-        # آخر حركة كبيرة (أعلى قمة وأدنى قاع في 30 شمعة)
-        high30 = float(h.iloc[-30:].max())
-        low30  = float(l.iloc[-30:].min())
-        range_ = high30 - low30
-
-        if range_ <= 0:
-            return {"at_bull_icp": False, "at_bear_icp": False, "signals": []}
-
-        # مستويات Fibonacci
-        fib_50  = low30  + range_ * 0.50
-        fib_618 = low30  + range_ * 0.618
-        fib_382 = low30  + range_ * 0.382
-
-        tolerance = range_ * 0.03  # 3% tolerance
-
-        signals = []
-        at_bull_icp = False
-        at_bear_icp = False
-
-        # Bull ICP: السعر عند 50-61.8% Fib من حركة صاعدة
-        if (float(c.iloc[-10]) > float(c.iloc[-20])):  # اتجاه صاعد
-            if abs(price - fib_50) <= tolerance or abs(price - fib_618) <= tolerance:
-                at_bull_icp = True
-                fib_level = 50 if abs(price - fib_50) < abs(price - fib_618) else 61.8
-                signals.append(f"⭐ ICP صاعد — عند Fib {fib_level}%")
-
-        # Bear ICP: السعر عند 38.2-50% Fib من حركة هابطة
-        if (float(c.iloc[-10]) < float(c.iloc[-20])):  # اتجاه هابط
-            if abs(price - fib_382) <= tolerance or abs(price - fib_50) <= tolerance:
-                at_bear_icp = True
-                fib_level = 38.2 if abs(price - fib_382) < abs(price - fib_50) else 50
-                signals.append(f"⭐ ICP هابط — عند Fib {fib_level}%")
-
-        return {
-            "at_bull_icp": at_bull_icp,
-            "at_bear_icp": at_bear_icp,
-            "fib_50":      round(fib_50, 6),
-            "fib_618":     round(fib_618, 6),
-            "fib_382":     round(fib_382, 6),
-            "signals":     signals,
-        }
-    except Exception:
-        return {"at_bull_icp":False,"at_bear_icp":False,"signals":[]}
-
-
-def full_scan_analysis(sym: str) -> dict:
-    """
-    تحليل شامل يجمع:
-    ① run_analysis الأساسي (8 مؤشرات)
-    ② Order Block
-    ③ Fair Value Gap
-    ④ Smart Money (BOS/CHoCH/Sweep)
-    ⑤ ICP (Fibonacci)
-    """
-    result = {
-        "sym":          sym,
-        "bull_total":   0,
-        "bear_total":   0,
-        "signals_bull": [],
-        "signals_bear": [],
-        "price":        0,
-        "tp1":0,"tp2":0,"tp3":0,"sl":0,
-        "error":        None,
-    }
-
-    # ① المؤشرات الأساسية
-    try:
-        base = run_analysis(sym)
-        if base.get("err"):
-            result["error"] = base["err"]
-            return result
-
-        result["price"] = base.get("price", 0)
-        result["tp1"]   = base.get("tp1", 0)
-        result["tp2"]   = base.get("tp2", 0)
-        result["tp3"]   = base.get("tp3", 0)
-        result["sl"]    = base.get("sl", 0)
-
-        bull_base = base.get("bull", 0)
-        bear_base = base.get("bear", 0)
-        result["bull_total"] += bull_base
-        result["bear_total"] += bear_base
-
-        # استخرج الإشارات المهمة
-        for sig in base.get("sigs", []):
-            icon = sig[2] if len(sig) > 2 else ""
-            name = sig[1] if len(sig) > 1 else ""
-            val  = sig[3] if len(sig) > 3 else ""
-            note = sig[4] if len(sig) > 4 else ""
-            label = f"*{name}:* `{val}`" + (f" _{note}_" if note else "")
-            if icon == "✅":
-                result["signals_bull"].append(f"✅ {label}")
-            elif icon == "🔴":
-                result["signals_bear"].append(f"🔴 {label}")
-    except Exception as e:
-        result["error"] = str(e)[:80]
-        return result
-
-    # جلب شموع 1h للـ ICT
-    df1h = fetch_tf(sym, "1h", 100)
-    if df1h is None or len(df1h) < 30:
-        return result
-
-    # ② Order Block
-    ob = detect_order_blocks(df1h)
-    if ob["in_bull_ob"]:
-        result["bull_total"] += 3
-        result["signals_bull"].append("🟩 *Order Block:* سعر عند OB صاعد")
-    if ob["in_bear_ob"]:
-        result["bear_total"] += 3
-        result["signals_bear"].append("🟥 *Order Block:* سعر عند OB هابط")
-
-    # ③ Fair Value Gap
-    fvg = detect_fvg(df1h)
-    if fvg["at_bull_fvg"]:
-        result["bull_total"] += 2
-        result["signals_bull"].append("💹 *FVG:* فجوة سعر صاعدة غير مملوءة")
-    if fvg["at_bear_fvg"]:
-        result["bear_total"] += 2
-        result["signals_bear"].append("🔻 *FVG:* فجوة سعر هابطة غير مملوءة")
-
-    # ④ Smart Money
-    smc = detect_smart_money(df1h)
-    if smc["score"] > 0:
-        result["bull_total"] += min(smc["score"], 4)
-        for s in smc["signals"]:
-            result["signals_bull"].append(f"💰 *SMC:* {s}")
-    elif smc["score"] < 0:
-        result["bear_total"] += min(abs(smc["score"]), 4)
-        for s in smc["signals"]:
-            result["signals_bear"].append(f"💰 *SMC:* {s}")
-
-    # ⑤ ICP
-    icp = detect_icp(df1h)
-    if icp["at_bull_icp"]:
-        result["bull_total"] += 3
-        for s in icp["signals"]:
-            result["signals_bull"].append(f"⭐ *ICP:* {s}")
-    if icp["at_bear_icp"]:
-        result["bear_total"] += 3
-        for s in icp["signals"]:
-            result["signals_bear"].append(f"⭐ *ICP:* {s}")
-
-    return result
-
-
-def build_scanner_alert(r: dict, direction: str) -> str:
-    sym   = r["sym"]
-    price = r["price"]
-    bull  = r["bull_total"]
-    bear  = r["bear_total"]
-    tp1   = r["tp1"]; tp2=r["tp2"]; tp3=r["tp3"]; sl=r["sl"]
-    _tz3  = timezone(timedelta(hours=3))
-    now   = datetime.now(_tz3).strftime("%H:%M:%S %d/%m/%Y")
-    total = bull + bear or 1
-
-    if direction == "BUY":
-        sigs   = r["signals_bull"]
-        header = "🟢 إشارة شراء — مؤشرات مجتمعة"
-        pct    = bull/total*100
-        score  = bull
-    else:
-        sigs   = r["signals_bear"]
-        header = "🔴 إشارة بيع — مؤشرات مجتمعة"
-        pct    = bear/total*100
-        score  = bear
-
-    bar = "█"*int(pct/10) + "░"*(10-int(pct/10))
-    m   = f"🎯 *{header}*\n"
-    m  += f"🪙 *{sym}* | 🕐 {now}\n"
-    m  += "━━━━━━━━━━━━━━━━━━━━\n\n"
-    m  += f"💰 السعر: `${fmt(price)}`\n"
-    m  += f"📊 نقاط {'صاعدة' if direction=='BUY' else 'هابطة'}: `{score}`\n"
-    m  += f"`{bar}` {pct:.0f}%\n\n"
-    m  += "📡 *المؤشرات المجتمعة:*\n"
-    for s in sigs[:8]:
-        m += f"  {s}\n"
-    m += "\n"
-    if sl and tp1:
-        m += "━━━━━━━━━━━━━━━━━━━━\n"
-        m += f"🟢 دخول: `${fmt(price)}`\n"
-        m += f"🔴 SL:   `${fmt(sl)}`\n"
-        m += f"💰 TP1:  `${fmt(tp1)}`\n"
-        m += f"💰 TP2:  `${fmt(tp2)}`\n"
-        m += f"🏆 TP3:  `${fmt(tp3)}`\n\n"
-    m += "━━━━━━━━━━━━━━━━━━━━\n"
-    m += "⚠️ _للأغراض التعليمية فقط_"
-    return m
-
-
-async def auto_scanner_job(ctx):
-    """مسح تلقائي كل 30 دقيقة بكل المؤشرات."""
-    chat_id   = ctx.job.data["chat_id"]
-    min_score = ctx.job.data.get("min_score", 7)
-    # جلب كل عملات Futures أو القائمة المخصصة
-    custom = scan_lists.get(chat_id, [])
-    sym_list = custom if custom else get_all_futures_symbols()
-    now_ts    = _time_mod.time()
-    found     = []
-
-    for sym in sym_list:
-        if now_ts - scan_alerted.get(chat_id,{}).get(sym,0) < SCAN_COOLDOWN:
-            continue
-        try:
-            loop = asyncio.get_event_loop()
-            r = await asyncio.wait_for(
-                loop.run_in_executor(None, full_scan_analysis, sym),
-                timeout=30)
-            if r.get("error") or r.get("price",0) == 0:
-                continue
-            if r["bull_total"] >= min_score:
-                found.append(("BUY",  sym, r["bull_total"], r))
-            elif r["bear_total"] >= min_score:
-                found.append(("SELL", sym, r["bear_total"], r))
-        except: continue
-
-    found.sort(key=lambda x: x[2], reverse=True)
-    for direction, sym, score, r in found[:3]:
-        scan_alerted.setdefault(chat_id,{})[sym] = now_ts
-        msg = build_scanner_alert(r, direction)
-        try:
-            await ctx.bot.send_message(
-                chat_id=chat_id, text=msg,
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton(f"📊 تحليل {sym[:-4]}", callback_data=f"r:{sym}"),
-                    InlineKeyboardButton("⚡ سكالب", callback_data=f"s:{sym}"),
-                ]]))
-        except Exception as e:
-            logging.warning(f"[SCANNER_SEND] {e}")
-
-
 # ==================================================
 # بناء الرسائل
 # ==================================================
@@ -1392,6 +884,310 @@ def fmt(v):
     if v >= 1:     return f"{v:.4f}"
     return f"{v:.6f}"
 
+
+
+# ╔══════════════════════════════════════════════╗
+# ║       SCALPING MODULE — 7 مؤشرات           ║
+# ╚══════════════════════════════════════════════╝
+
+def analyze_scalp(sym):
+    R={"sym":sym,"bull":0,"bear":0,"sigs":[],"warn":[],"err":None}
+    try:
+        price=None
+        for url in ["https://api.binance.com/api/v3/ticker/price",f"{BASE}/fapi/v1/premiumIndex"]:
+            try:
+                r=api_get(url,{"symbol":sym},timeout=(4,8)); d=r.json()
+                p=d.get("price") or d.get("markPrice")
+                if p and float(p)>0: price=float(p); break
+            except: continue
+        if not price: R["err"]=f"❌ {sym}"; return R
+        R["price"]=price
+        df1=fetch_tf(sym,"1m",60); df5=fetch_tf(sym,"5m",30)
+        if df1 is None or len(df1)<20: R["err"]="❌ بيانات 1m"; return R
+        c1=pd.to_numeric(df1["c"],errors="coerce"); h1=pd.to_numeric(df1["h"],errors="coerce")
+        l1=pd.to_numeric(df1["l"],errors="coerce"); o1=pd.to_numeric(df1["o"],errors="coerce")
+        v1=pd.to_numeric(df1["v"],errors="coerce")
+        # RSI7
+        d_=c1.diff(); g_=d_.clip(lower=0).rolling(7).mean(); l_=(-d_.clip(upper=0)).rolling(7).mean()
+        rsi7=float((100-100/(1+g_/l_.replace(0,np.nan))).iloc[-1]); R["rsi7"]=rsi7
+        if rsi7<=25: R["bull"]+=2; R["sigs"].append(("1","RSI(7)","✅",f"{rsi7:.1f}","ذروة بيع ⚡"))
+        elif rsi7<=35: R["bull"]+=1; R["sigs"].append(("1","RSI(7)","✅",f"{rsi7:.1f}","ذروة بيع"))
+        elif rsi7>=75: R["bear"]+=2; R["sigs"].append(("1","RSI(7)","🔴",f"{rsi7:.1f}","ذروة شراء ⚡"))
+        elif rsi7>=65: R["bear"]+=1; R["sigs"].append(("1","RSI(7)","🔴",f"{rsi7:.1f}","ذروة شراء"))
+        else: R["sigs"].append(("1","RSI(7)","⚪",f"{rsi7:.1f}","محايد"))
+        # EMA Cross
+        e5=c1.ewm(span=5,adjust=False).mean(); e13=c1.ewm(span=13,adjust=False).mean()
+        cup=float(e5.iloc[-2])<float(e13.iloc[-2]) and float(e5.iloc[-1])>=float(e13.iloc[-1])
+        cdn=float(e5.iloc[-2])>float(e13.iloc[-2]) and float(e5.iloc[-1])<=float(e13.iloc[-1])
+        if cup: R["bull"]+=3; R["sigs"].append(("2","EMA Cross","✅","EMA5 ↗ EMA13","Golden Cross ⚡"))
+        elif cdn: R["bear"]+=3; R["sigs"].append(("2","EMA Cross","🔴","EMA5 ↘ EMA13","Death Cross ⚡"))
+        elif float(e5.iloc[-1])>float(e13.iloc[-1]): R["bull"]+=1; R["sigs"].append(("2","EMA Cross","✅","EMA5>EMA13","صاعد"))
+        else: R["bear"]+=1; R["sigs"].append(("2","EMA Cross","🔴","EMA5<EMA13","هابط"))
+        # Bollinger
+        if df5 is not None and len(df5)>=20:
+            c5=pd.to_numeric(df5["c"],errors="coerce"); bm=c5.rolling(20).mean(); bs=c5.rolling(20).std()
+            bup=float((bm+2*bs).iloc[-1]); blo=float((bm-2*bs).iloc[-1]); bw=(bup-blo)/float(bm.iloc[-1])*100
+            if price<=blo: R["bull"]+=2; R["sigs"].append(("3","Bollinger","✅","BB سفلي","Bounce ⚡"))
+            elif price>=bup: R["bear"]+=2; R["sigs"].append(("3","Bollinger","🔴","BB علوي","انعكاس ⚡"))
+            elif bw<2.0: R["sigs"].append(("3","Bollinger","🟡",f"Squeeze {bw:.1f}%","اختراق وشيك 🔥"))
+            else: R["sigs"].append(("3","Bollinger","⚪",f"عرض {bw:.1f}%","طبيعي"))
+        else: R["sigs"].append(("3","Bollinger","❓","غير متاح",""))
+        # Volume
+        va=float(v1.iloc[-20:-1].mean()) or 1; vc=float(v1.iloc[-1]); vr=vc/va
+        if vr>=3.0:
+            bb=float(c1.iloc[-1])>float(o1.iloc[-1]); R["bull" if bb else "bear"]+=2
+            R["sigs"].append(("4","Volume","✅" if bb else "🔴",f"x{vr:.1f}","ضغط شراء 🔥" if bb else "ضغط بيع 🔥"))
+        elif vr>=1.8: R["sigs"].append(("4","Volume","🟡",f"x{vr:.1f}","مرتفع"))
+        else: R["sigs"].append(("4","Volume","⚪",f"x{vr:.1f}","طبيعي"))
+        # CVD
+        try:
+            _bq=pd.to_numeric(df1["bq"],errors="coerce").fillna(0); _qv=pd.to_numeric(df1["qv"],errors="coerce").fillna(0)
+            if _bq.sum()==0: raise ValueError
+            _cvd=(_bq-(_qv-_bq)).cumsum(); _chg=float(_cvd.iloc[-1])-float(_cvd.iloc[-5]); _pd=float(c1.iloc[-1])-float(c1.iloc[-5])
+            if _chg>0 and _pd>0: R["bull"]+=2; R["sigs"].append(("5","CVD 1m","✅","↑ صاعد","شراء حقيقي ⚡"))
+            elif _chg<0 and _pd<0: R["bear"]+=2; R["sigs"].append(("5","CVD 1m","🔴","↓ هابط","بيع حقيقي ⚡"))
+            elif _chg<0 and _pd>0: R["bear"]+=1; R["sigs"].append(("5","CVD 1m","🔴","Divergence","ارتفاع وهمي ⚠️"))
+            elif _chg>0 and _pd<0: R["bull"]+=1; R["sigs"].append(("5","CVD 1m","✅","Divergence","هبوط وهمي 💡"))
+            else: R["sigs"].append(("5","CVD 1m","⚪","محايد",""))
+        except:
+            _bull=(c1>o1).astype(float); _ce=(v1*(2*_bull-1)).cumsum()
+            _chge=float(_ce.iloc[-1])-float(_ce.iloc[-5])
+            if _chge>0: R["bull"]+=1; R["sigs"].append(("5","CVD 1m","✅","~↑(تقديري)",""))
+            else: R["bear"]+=1; R["sigs"].append(("5","CVD 1m","🔴","~↓(تقديري)",""))
+        # Candlestick
+        bp,brp=detect_patterns(df1)
+        if bp: R["bull"]+=1; R["sigs"].append(("6","شمعة 1m","✅",bp[0],"نمط صاعد"))
+        elif brp: R["bear"]+=1; R["sigs"].append(("6","شمعة 1m","🔴",brp[0],"نمط هابط"))
+        else: R["sigs"].append(("6","شمعة 1m","⚪","لا نمط",""))
+        # ATR
+        _h=h1.values; _l=l1.values; _c=c1.values
+        tr=pd.Series([max(_h[i]-_l[i],abs(_h[i]-_c[i-1]),abs(_l[i]-_c[i-1])) for i in range(1,len(_c))],dtype=float)
+        atr1=float(tr.rolling(7).mean().iloc[-1]) if len(tr)>=7 else 0; atrp=atr1/price*100; R["atr1"]=atr1
+        if atrp>=0.5:
+            if float(c1.iloc[-1])>float(c1.iloc[-3]): R["bull"]+=1
+            else: R["bear"]+=1
+            R["sigs"].append(("7","ATR","🔥",f"{atrp:.2f}%","تقلب عالي ⚡"))
+        elif atrp>=0.2: R["sigs"].append(("7","ATR","✅",f"{atrp:.2f}%","جيد"))
+        else: R["warn"].append(f"⚠️ ATR منخفض ({atrp:.2f}%)"); R["sigs"].append(("7","ATR","⚪",f"{atrp:.2f}%","هادئ"))
+        # القرار
+        if R["bull"]>=6: R["action"]="LONG"; R["decision"]="⚡ SCALP LONG قوي"; R["conf"]=f"{R['bull']} إشارة"
+        elif R["bear"]>=6: R["action"]="SHORT"; R["decision"]="⚡ SCALP SHORT قوي"; R["conf"]=f"{R['bear']} إشارة"
+        elif R["bull"]>=4: R["action"]="LONG"; R["decision"]="✅ SCALP LONG"; R["conf"]=f"{R['bull']} إشارة"
+        elif R["bear"]>=4: R["action"]="SHORT"; R["decision"]="🔴 SCALP SHORT"; R["conf"]=f"{R['bear']} إشارة"
+        else: R["action"]="WAIT"; R["decision"]="⏳ انتظر"; R["conf"]=f"↑{R['bull']} ↓{R['bear']}"
+        if R["action"]!="WAIT" and atr1>0:
+            _sd=max(atr1*0.5,price*0.002)
+            if R["action"]=="LONG":
+                R["sl"]=round(price-_sd,6); R["tp1"]=round(price+_sd,6); R["tp2"]=round(price+_sd*2,6); R["tp3"]=round(price+_sd*3,6)
+            else:
+                R["sl"]=round(price+_sd,6); R["tp1"]=round(price-_sd,6); R["tp2"]=round(price-_sd*2,6); R["tp3"]=round(price-_sd*3,6)
+            R["sl_pct"]=round(_sd/price*100,3); R["tp1_pct"]=round(_sd/price*100,3)
+        R["lev"]="x10-x20" if sym in ("BTCUSDT","ETHUSDT") else "x5-x10"
+        R["size"]="0.5-1%"; R["duration"]="1-15 دقيقة"
+    except Exception as e: R["err"]=f"❌ {str(e)[:80]}"
+    return R
+
+
+def build_scalp(R):
+    if R.get("err"): return R["err"]
+    sym=R["sym"]; price=R.get("price",0); action=R.get("action","WAIT")
+    _tz3=timezone(timedelta(hours=3))
+    now=datetime.now(_tz3).strftime("%H:%M:%S %d/%m/%Y")
+    icons={"LONG":"🟢 LONG","SHORT":"🔴 SHORT","WAIT":"⏳ انتظر"}
+    m =f"⚡ *SCALP — {sym}* — {icons.get(action,'⏳')}\n"
+    m+=f"💰 `${fmt(price)}` | 🕐 {now}\n"
+    m+=f"⏱ المدة: `{R.get('duration','1-15 دقيقة')}`\n"
+    m+="━━━━━━━━━━━━━━━━\n\n"
+    m+="📊 *المؤشرات (1m/5m):*\n\n"
+    for num,name,icon,val,note in sorted(R.get("sigs",[]),key=lambda x:x[0]):
+        m+=f"{icon} *{num}. {name}:* `{val}`\n"
+        if note: m+=f"   _{note}_\n"
+        m+="\n"
+    m+="━━━━━━━━━━━━━━━━\n"
+    m+=f"📊 *النتيجة:* {R.get('conf','')}\n"
+    m+=f"⚡ *القرار:* {R.get('decision','')}\n\n"
+    if action!="WAIT" and R.get("sl"):
+        slp=R.get("sl_pct",0); tpp=R.get("tp1_pct",0)
+        m+="━━━━━━━━━━━━━━━━\n"
+        m+=f"🟢 دخول: `${fmt(price)}`\n"
+        m+=f"🔴 SL:   `${fmt(R['sl'])}` _(-{slp:.2f}%)_\n"
+        m+=f"💰 TP1:  `${fmt(R['tp1'])}` _(+{tpp:.2f}%)_\n"
+        m+=f"💰 TP2:  `${fmt(R['tp2'])}`\n"
+        m+=f"🏆 TP3:  `${fmt(R['tp3'])}`\n"
+        m+=f"🔧 الرافعة: `{R.get('lev','x10')}`\n\n"
+    for w in R.get("warn",[]): m+=f"{w}\n"
+    m+="⚠️ _للأغراض التعليمية فقط_"
+    return m
+
+
+async def scalp_monitor_job(ctx):
+    chat_id=ctx.job.data["chat_id"]; sym=ctx.job.data["sym"]
+    try:
+        loop=asyncio.get_event_loop()
+        R=await asyncio.wait_for(loop.run_in_executor(None,analyze_scalp,sym),timeout=25)
+        if R.get("err"): return
+        if R.get("action") in ("LONG","SHORT"):
+            msg="🔔 *تنبيه Scalp!*\n"+build_scalp(R)
+            await ctx.bot.send_message(chat_id=chat_id,text=msg,parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("⚡ تحديث",callback_data=f"s:{sym}"),
+                    InlineKeyboardButton("📊 تحليل",callback_data=f"r:{sym}"),
+                ]]))
+    except Exception: pass
+
+
+# ╔══════════════════════════════════════════════════════════╗
+# ║      ICT/SMC AUTO SCANNER                               ║
+# ╚══════════════════════════════════════════════════════════╝
+
+_scan_excluded = {"USDTUSDT","BUSDUSDT","USDCUSDT","FDUSDUSDT","WBTCUSDT","WETHUSDT"}
+_futures_cache: list = []; _futures_ts: float = 0
+scan_lists:    dict  = {}
+scan_alerted:  dict  = {}
+SCAN_COOL = 7200
+
+def get_futures_syms():
+    global _futures_cache, _futures_ts
+    import time as _t
+    if _futures_cache and (_t.time()-_futures_ts)<3600:
+        return _futures_cache
+    try:
+        for url in [f"{BASE}/fapi/v1/ticker/24hr","https://fapi.binance.com/fapi/v1/ticker/24hr"]:
+            r=api_get(url,timeout=(12,30))
+            if r and r.status_code==200:
+                syms=[t["symbol"] for t in r.json() if t.get("symbol","").endswith("USDT") and t.get("symbol") not in _scan_excluded]
+                if syms: _futures_cache=sorted(syms); _futures_ts=_t.time(); return syms
+    except: pass
+    return _futures_cache or ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT"]
+
+def ob_fvg_smc(sym):
+    """Order Block + FVG + Smart Money على 1h."""
+    import time as _t
+    score_b=0; score_s=0; sigs=[]
+    try:
+        df=fetch_tf(sym,"1h",80)
+        if df is None or len(df)<30: return 0,0,[]
+        c=pd.to_numeric(df["c"],errors="coerce"); h=pd.to_numeric(df["h"],errors="coerce")
+        l=pd.to_numeric(df["l"],errors="coerce"); o=pd.to_numeric(df["o"],errors="coerce")
+        v=pd.to_numeric(df["v"],errors="coerce"); price=float(c.iloc[-1])
+
+        # Order Block
+        avg_move=float(abs(c.diff()).iloc[-20:].mean()) or 1
+        for i in range(2,min(40,len(df)-3)):
+            idx=-(i+1); is_bear=float(c.iloc[idx])<float(o.iloc[idx])
+            is_bull=float(c.iloc[idx])>float(o.iloc[idx])
+            mv=abs(float(c.iloc[idx+3])-float(c.iloc[idx+1]))
+            if mv>avg_move*1.5:
+                ob_top=max(float(o.iloc[idx]),float(c.iloc[idx])); ob_bot=min(float(o.iloc[idx]),float(c.iloc[idx]))
+                if is_bear and float(c.iloc[idx+3])>float(c.iloc[idx]):
+                    if ob_bot<=price<=ob_top*1.01: score_b+=3; sigs.append("🟩 OB صاعد"); break
+                if is_bull and float(c.iloc[idx+3])<float(c.iloc[idx]):
+                    if ob_bot*0.99<=price<=ob_top: score_s+=3; sigs.append("🟥 OB هابط"); break
+
+        # FVG
+        for i in range(2,min(25,len(df)-1)):
+            idx=-i
+            flo=float(l.iloc[idx]); fhi=float(h.iloc[idx-2])
+            if flo>fhi and (flo-fhi)/fhi*100>=0.1 and fhi<=price<=flo:
+                score_b+=2; sigs.append("💹 FVG صاعد"); break
+            fhi2=float(h.iloc[idx]); flo2=float(l.iloc[idx-2])
+            if fhi2<flo2 and (flo2-fhi2)/fhi2*100>=0.1 and fhi2<=price<=flo2:
+                score_s+=2; sigs.append("🔻 FVG هابط"); break
+
+        # Smart Money
+        sh=float(h.iloc[-20:].max()); sl2=float(l.iloc[-20:].min())
+        ph=float(h.iloc[-5:-1].max()); pl=float(l.iloc[-5:-1].min())
+        if price>sh*0.998: score_b+=3; sigs.append("🚀 BOS صاعد")
+        elif price<sl2*1.002: score_s+=3; sigs.append("📉 BOS هابط")
+        if float(c.iloc[-3])<float(c.iloc[-5]) and price>ph: score_b+=2; sigs.append("🔄 CHoCH صاعد")
+        elif float(c.iloc[-3])>float(c.iloc[-5]) and price<pl: score_s+=2; sigs.append("🔄 CHoCH هابط")
+        if float(l.iloc[-2])<sl2 and price>sl2: score_b+=3; sigs.append("💎 Bull Sweep")
+        elif float(h.iloc[-2])>sh and price<sh: score_s+=3; sigs.append("🐻 Bear Sweep")
+
+        # ICP Fibonacci
+        high30=float(h.iloc[-30:].max()); low30=float(l.iloc[-30:].min()); rng=high30-low30
+        if rng>0:
+            f50=low30+rng*0.5; f618=low30+rng*0.618; tol=rng*0.03
+            if float(c.iloc[-10])>float(c.iloc[-20]):
+                if abs(price-f50)<=tol or abs(price-f618)<=tol:
+                    score_b+=3; fl=50 if abs(price-f50)<abs(price-f618) else 61.8
+                    sigs.append(f"⭐ ICP صاعد Fib{fl:.0f}%")
+            else:
+                f382=low30+rng*0.382
+                if abs(price-f382)<=tol or abs(price-f50)<=tol:
+                    score_s+=3; fl=38.2 if abs(price-f382)<abs(price-f50) else 50
+                    sigs.append(f"⭐ ICP هابط Fib{fl:.0f}%")
+    except: pass
+    return score_b, score_s, sigs
+
+def full_scan(sym):
+    base=run_analysis_sync(sym)
+    if not base or base.get("err"): return None
+    sb=base.get("bull",0); ss=base.get("bear",0); price=base.get("price",0)
+    obs,oss,sigs=ob_fvg_smc(sym)
+    bull=sb+obs; bear=ss+oss
+    return {"sym":sym,"bull":bull,"bear":bear,"price":price,
+            "tp1":base.get("tp1",0),"tp2":base.get("tp2",0),
+            "tp3":base.get("tp3",0),"sl":base.get("sl",0),
+            "base_sigs":base.get("sigs",[]),"ict_sigs":sigs}
+
+def run_analysis_sync(sym):
+    """نسخة sync من run_analysis."""
+    try: return analyze(sym)
+    except: return None
+
+def build_scan_msg(r, direction):
+    sym=r["sym"]; price=r["price"]; bull=r["bull"]; bear=r["bear"]
+    score=bull if direction=="BUY" else bear
+    sigs=r.get("ict_sigs",[])
+    base_sigs=[(s[2],s[1],s[3]) for s in r.get("base_sigs",[]) if (direction=="BUY" and s[2]=="✅") or (direction=="SELL" and s[2]=="🔴")]
+    _tz3=timezone(timedelta(hours=3))
+    now=datetime.now(_tz3).strftime("%H:%M:%S %d/%m/%Y")
+    icon="🟢" if direction=="BUY" else "🔴"
+    bar="█"*int(score/2)+"░"*(10-min(int(score/2),10))
+    m=f"🎯 *إشارة {icon} {'شراء' if direction=='BUY' else 'بيع'} — {sym}*\n🕐 {now}\n"
+    m+="━━━━━━━━━━━━━━━━━━━━\n\n"
+    m+=f"💰 `${fmt(price)}` | نقاط: `{score}`\n`{bar}`\n\n"
+    m+="📡 *ICT/SMC:*\n"
+    for s in sigs: m+=f"  {s}\n"
+    m+="\n📊 *المؤشرات الأساسية:*\n"
+    for ic,nm,vl in base_sigs[:4]: m+=f"  {ic} *{nm}:* `{vl}`\n"
+    sl=r.get("sl",0); tp1=r.get("tp1",0); tp2=r.get("tp2",0); tp3=r.get("tp3",0)
+    if sl and tp1:
+        m+="\n━━━━━━━━━━━━━━━━━━━━\n"
+        m+=f"🟢 دخول: `${fmt(price)}`\n"
+        m+=f"🔴 SL:   `${fmt(sl)}`\n"
+        m+=f"💰 TP1:  `${fmt(tp1)}`\n"
+        m+=f"💰 TP2:  `${fmt(tp2)}`\n"
+        m+=f"🏆 TP3:  `${fmt(tp3)}`\n\n"
+    m+="⚠️ _للأغراض التعليمية فقط_"
+    return m
+
+async def auto_scanner_job(ctx):
+    import time as _t
+    chat_id=ctx.job.data["chat_id"]; min_sc=ctx.job.data.get("min_score",7)
+    sym_list=scan_lists.get(chat_id,[]) or get_futures_syms()
+    now_ts=_t.time(); found=[]
+    for sym in sym_list:
+        if now_ts-scan_alerted.get(chat_id,{}).get(sym,0)<SCAN_COOL: continue
+        try:
+            loop=asyncio.get_event_loop()
+            r=await asyncio.wait_for(loop.run_in_executor(None,full_scan,sym),timeout=35)
+            if not r: continue
+            if r["bull"]>=min_sc: found.append(("BUY",sym,r["bull"],r))
+            elif r["bear"]>=min_sc: found.append(("SELL",sym,r["bear"],r))
+        except: continue
+    found.sort(key=lambda x:x[2],reverse=True)
+    for direction,sym,score,r in found[:3]:
+        scan_alerted.setdefault(chat_id,{})[sym]=now_ts
+        msg=build_scan_msg(r,direction)
+        try:
+            await ctx.bot.send_message(chat_id=chat_id,text=msg,parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(f"📊 {sym[:-4]}",callback_data=f"r:{sym}"),
+                    InlineKeyboardButton("⚡ سكالب",callback_data=f"s:{sym}"),
+                ]]))
+        except Exception as e: logging.warning(f"[SCAN_SEND] {e}")
 
 def build_entry(R, alert=False):
     if R.get("err"):
@@ -1626,28 +1422,20 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
     await u.message.reply_text(
         "👋 *MAHMOUD TRADING BOT v3*\n\n"
         "📊 *8 مؤشرات:*\n"
-        "① Funding Rate | ② Open Interest\n"
-        "③ Long/Short | ④ EMA + Volume\n"
-        "⑤ Liquidations | ⑥ CVD\n"
+        "① Funding Rate\n"
+        "② Open Interest\n"
+        "③ Long/Short Ratio\n"
+        "④ EMA + Volume\n"
+        "⑤ Liquidations\n"
+        "⑥ CVD\n"
         f"⑦ On-Chain (Etherscan) {eth_status}\n"
         "⑧ شموع MTF (15m|1h|4h|1d)\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━\n"
         "📈 *تحليل فوري:*\n"
-        "أرسل: `BTC` أو `ETH` أو `SOL` أو أي عملة\n\n"
-        "👁 *متابعة تلقائية:*\n"
-        "`تابع BTC` | `وقف BTC` | `وقف الكل`\n\n"
-        "⚡ *Scalping (1m/5m):*\n"
-        "`سكالب BTC` — تحليل فوري\n"
-        "`تابع سكالب BTC` — تنبيه كل 5 دقائق\n"
-        "`وقف سكالب BTC` — إيقاف\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔍 *الماسح الذكي (ICT/SMC):*\n"
-        "`ماسح` — يفحص 30 عملة كل 30 دقيقة\n"
-        "`ماسح 5` — أكثر إشارات (حد 5 نقاط)\n"
-        "`ماسح 8` — أقوى فقط (حد 8 نقاط)\n"
-        "`وقف ماسح` — إيقاف\n"
-        "`قائمة الماسح` — العملات المراقبة\n"
-        "`أضف ORCA` | `احذف ORCA`\n\n"
+        "أرسل: `BTC` أو `ETH` أو `SOL`\n\n"
+        "👁 *متابعة تلقائية (دخول+خروج):*\n"
+        "أرسل: `تابع BTC`\n\n"
+        "⛔ *إيقاف:* `وقف BTC` أو `وقف الكل`\n\n"
         "📋 *القائمة:* `قائمة`\n\n"
         "⚠️ _للأغراض التعليمية فقط_",
         parse_mode="Markdown")
@@ -1746,61 +1534,77 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
         return
 
     # ══ ماسح ICT/SMC ══
-    if text.startswith("ماسح") or text.lower().startswith("scanner"):
+    if text.startswith("ماسح") or text.lower()=="scanner":
         parts=text.split(); min_sc=7
         for p in parts:
             try:
                 n=int(p)
                 if 4<=n<=15: min_sc=n
             except: pass
-        jn=f"ascan_{chat_id}"
+        jn=f"sc_{chat_id}"
         for j in c.job_queue.get_jobs_by_name(jn): j.schedule_removal()
         c.job_queue.run_repeating(auto_scanner_job,interval=1800,first=30,
             data={"chat_id":chat_id,"min_score":min_sc},name=jn)
-        cnt=len(scan_lists.get(chat_id,DEFAULT_SCAN_LIST))
+        total=len(scan_lists.get(chat_id,[]) or get_futures_syms())
         await u.message.reply_text(
             f"🔍 *تم تفعيل الماسح الذكي*\n\n"
-            f"⏱ يفحص كل 30 دقيقة\n"
-            f"📊 يراقب {cnt} عملة\n"
+            f"⏱ كل 30 دقيقة | 📊 {total} عملة\n"
             f"🎯 حد المؤشرات: ≥{min_sc} نقطة\n\n"
-            f"*المؤشرات المستخدمة:*\n"
-            f"① المؤشرات الأساسية (8 مؤشرات)\n"
-            f"② Order Block (OB)\n"
-            f"③ Fair Value Gap (FVG)\n"
-            f"④ Smart Money (BOS/CHoCH/Sweep)\n"
-            f"⑤ ICP — نقطة Fibonacci المثالية\n\n"
-            f"`ماسح 5` — أكثر إشارات | `ماسح 10` — أقوى فقط\n"
-            f"`وقف ماسح` — إيقاف | `أضف ORCA` — إضافة عملة",
+            f"*المؤشرات:*\n"
+            f"① 8 مؤشرات أساسية\n"
+            f"② Order Block | ③ FVG\n"
+            f"④ Smart Money | ⑤ ICP\n\n"
+            f"`ماسح 5` أكثر | `ماسح 10` أقوى | `وقف ماسح`",
             parse_mode="Markdown")
         return
-
     if text in ("وقف ماسح","stop scanner"):
-        jn=f"ascan_{chat_id}"
+        jn=f"sc_{chat_id}"
         for j in c.job_queue.get_jobs_by_name(jn): j.schedule_removal()
-        await u.message.reply_text("⛔ تم إيقاف الماسح الذكي"); return
-
-    if text in ("قائمة الماسح","عملات الماسح"):
-        lst=scan_lists.get(chat_id,[]) or get_all_futures_symbols()
-        m2=f"📋 *عملات الماسح ({len(lst)}):*\n\n"
-        m2+=" | ".join([f"`{s[:-4]}`" for s in lst])
-        m2+="\n\n`أضف ORCA` أو `احذف ORCA`"
+        await u.message.reply_text("⛔ تم إيقاف الماسح"); return
+    if text in ("قائمة الماسح",):
+        lst=scan_lists.get(chat_id,[]) or get_futures_syms()
+        m2=f"📋 *الماسح ({len(lst)} عملة):*\n"+" | ".join([f"`{s[:-4]}`" for s in lst[:30]])
+        if len(lst)>30: m2+=f"\n... و{len(lst)-30} أخرى"
         await u.message.reply_text(m2,parse_mode="Markdown"); return
-
     if text.startswith("أضف ") or text.startswith("اضف "):
         raw=text.split(maxsplit=1)[1].upper()
-        sym=raw if raw.endswith("USDT") else raw+"USDT"
-        lst=scan_lists.setdefault(chat_id,list(DEFAULT_SCAN_LIST))
-        if sym not in lst: lst.append(sym); await u.message.reply_text(f"✅ أضفت `{sym}`",parse_mode="Markdown")
-        else: await u.message.reply_text(f"ℹ️ `{sym}` موجودة",parse_mode="Markdown")
-        return
-
-    if text.startswith("احذف ") or text.startswith("احزف "):
+        sym2=raw if raw.endswith("USDT") else raw+"USDT"
+        lst=scan_lists.setdefault(chat_id,list(get_futures_syms()))
+        if sym2 not in lst: lst.append(sym2)
+        await u.message.reply_text(f"✅ أضفت `{sym2}`",parse_mode="Markdown"); return
+    if text.startswith("احذف "):
         raw=text.split(maxsplit=1)[1].upper()
-        sym=raw if raw.endswith("USDT") else raw+"USDT"
-        lst=scan_lists.setdefault(chat_id,list(DEFAULT_SCAN_LIST))
-        if sym in lst: lst.remove(sym); await u.message.reply_text(f"✅ حذفت `{sym}`",parse_mode="Markdown")
-        else: await u.message.reply_text(f"ℹ️ `{sym}` غير موجودة",parse_mode="Markdown")
-        return
+        sym2=raw if raw.endswith("USDT") else raw+"USDT"
+        lst=scan_lists.setdefault(chat_id,list(get_futures_syms()))
+        if sym2 in lst: lst.remove(sym2)
+        await u.message.reply_text(f"✅ حذفت `{sym2}`",parse_mode="Markdown"); return
+
+    # ══ سكالب ══
+    if text.startswith("سكالب") or text.lower().startswith("scalp"):
+        parts=text.split(); sym2=resolve_sym(parts[1]) if len(parts)>1 else "BTCUSDT"
+        wait2=await u.message.reply_text(f"⚡ جاري تحليل Scalp *{sym2}*...",parse_mode="Markdown")
+        loop=asyncio.get_event_loop()
+        R2=await asyncio.wait_for(loop.run_in_executor(None,analyze_scalp,sym2),timeout=30)
+        await wait2.delete()
+        await u.message.reply_text(build_scalp(R2),parse_mode="Markdown",reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔄 تحديث",callback_data=f"s:{sym2}"),
+            InlineKeyboardButton("📊 تحليل",callback_data=f"r:{sym2}"),
+        ]])); return
+
+    if text.startswith("تابع سكالب"):
+        parts=text.split(); sym2=resolve_sym(parts[2]) if len(parts)>2 else "BTCUSDT"
+        jn=f"ss_{chat_id}_{sym2}"
+        for j in c.job_queue.get_jobs_by_name(jn): j.schedule_removal()
+        c.job_queue.run_repeating(scalp_monitor_job,interval=300,first=10,
+            data={"chat_id":chat_id,"sym":sym2},name=jn)
+        await u.message.reply_text(f"⚡ تابع Scalp *{sym2}* كل 5 دقائق",parse_mode="Markdown"); return
+
+    if text.startswith("وقف سكالب"):
+        parts=text.split(); sym2=resolve_sym(parts[2]) if len(parts)>2 else ""
+        if sym2:
+            jn=f"ss_{chat_id}_{sym2}"
+            for j in c.job_queue.get_jobs_by_name(jn): j.schedule_removal()
+        await u.message.reply_text(f"⛔ وقف Scalp {sym2}"); return
 
         # ── تحليل فوري ──
     if not text or len(text) > 15:
@@ -1808,7 +1612,6 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
             "أرسل اسم العملة مثل: `BTC`", parse_mode="Markdown")
         return
 
-    # بحث ذكي عن الرمز
     sym = resolve_sym(text)
 
     wait = await u.message.reply_text(
