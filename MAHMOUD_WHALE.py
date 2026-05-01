@@ -97,23 +97,33 @@ def store_new_whales(transactions: List[Dict]) -> int:
 # Display
 # ─────────────────────────────────────────────
 
+def _esc_md(s: str) -> str:
+    """يهرب رموز Markdown الخاصة"""
+    if not s:
+        return ""
+    s = str(s)
+    for ch in ("_", "*", "[", "]", "`"):
+        s = s.replace(ch, "\\" + ch)
+    return s
+
+
 def fmt_whale(w: Dict) -> str:
-    symbol = w.get("symbol", "")
+    symbol = _esc_md(w.get("symbol", ""))
     amount_usd = w.get("amount_usd", 0)
     amount = w.get("amount", 0)
-    from_owner = w.get("from_owner", "?")
-    to_owner = w.get("to_owner", "?")
+    from_owner = _esc_md(w.get("from_owner", "?"))
+    to_owner = _esc_md(w.get("to_owner", "?"))
     ts = w.get("timestamp", 0)
 
     # Direction logic
     arrow = "→"
-    if from_owner == "exchange" and to_owner != "exchange":
+    if w.get("from_owner") == "exchange" and w.get("to_owner") != "exchange":
         flow_emoji = "📤"  # exchange outflow (bullish)
         flow_label = "خروج من Exchange"
-    elif from_owner != "exchange" and to_owner == "exchange":
+    elif w.get("from_owner") != "exchange" and w.get("to_owner") == "exchange":
         flow_emoji = "📥"  # inflow (bearish)
         flow_label = "دخول لـ Exchange"
-    elif from_owner == "exchange" and to_owner == "exchange":
+    elif w.get("from_owner") == "exchange" and w.get("to_owner") == "exchange":
         flow_emoji = "🔄"
         flow_label = "بين Exchanges"
     else:

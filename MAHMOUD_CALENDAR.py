@@ -381,6 +381,16 @@ def fmt_macro_snapshot() -> str:
 # ─────────────────────────────────────────────
 
 
+def _esc_md(s: str) -> str:
+    """يهرب رموز Markdown الخاصة"""
+    if not s:
+        return ""
+    s = str(s)
+    for ch in ("_", "*", "[", "]", "`"):
+        s = s.replace(ch, "\\" + ch)
+    return s
+
+
 def fmt_event(ev: Dict) -> str:
     d = ev["date"]
     if isinstance(d, str):
@@ -395,16 +405,19 @@ def fmt_event(ev: Dict) -> str:
     impact = ev.get("importance", 1)
     impact_emoji = "🔥" if impact >= 3 else ("⚡" if impact >= 2 else "📅")
 
-    msg = f"{impact_emoji} {flag} *{ev.get('event', ev.get('title', ''))}*\n"
+    title = _esc_md(ev.get("event", ev.get("title", "")))
+    msg = f"{impact_emoji} {flag} *{title}*\n"
     msg += f"   ⏰ {d.strftime('%Y-%m-%d')} • {time_str}"
 
     if ev.get("type") == "crypto":
         coins = ev.get("coins", [])
         if coins:
-            msg += f"\n   💰 العملات: {', '.join(coins[:5])}"
+            safe_coins = [_esc_md(c) for c in coins[:5]]
+            msg += f"\n   💰 العملات: {', '.join(safe_coins)}"
         cats = ev.get("category", [])
         if cats:
-            msg += f"\n   🏷️ {', '.join(cats[:3])}"
+            safe_cats = [_esc_md(c) for c in cats[:3]]
+            msg += f"\n   🏷️ {', '.join(safe_cats)}"
 
     msg += "\n"
     return msg
@@ -488,9 +501,11 @@ def fmt_top_catalysts() -> str:
             when = f"خلال {hours}h"
         else:
             when = f"خلال {hours // 24}d"
-        msg += f"*{i}. {ev.get('event', ev.get('title', ''))}*\n"
+        title = _esc_md(ev.get('event', ev.get('title', '')))
+        msg += f"*{i}. {title}*\n"
         msg += f"   {when} • {d.strftime('%Y-%m-%d %H:%M UTC')}\n"
         if ev.get("type") == "crypto" and ev.get("coins"):
-            msg += f"   💰 {', '.join(ev['coins'][:3])}\n"
+            safe_coins = [_esc_md(c) for c in ev['coins'][:3]]
+            msg += f"   💰 {', '.join(safe_coins)}\n"
         msg += "\n"
     return msg

@@ -2602,13 +2602,32 @@ async def handle_btn(u: Update, c: ContextTypes.DEFAULT_TYPE):
 # ==================================================
 
 async def error_handler(update, context):
-    logging.warning(f"Bot error: {context.error}")
+    """يسجل تفاصيل الخطأ + يحاول إرسال رد بدون Markdown لو الـMarkdown هو السبب"""
+    err = context.error
+    err_type = type(err).__name__
+    err_msg = str(err)[:200]
+    logging.error(f"Bot error [{err_type}]: {err_msg}")
+
+    # طباعة في الـlog مع تفاصيل الـupdate
     try:
-        if update and update.effective_message:
-            await update.effective_message.reply_text(
-                "⚠️ حدث خطأ مؤقت — حاول مرة ثانية")
+        if update and hasattr(update, 'effective_message') and update.effective_message:
+            user_text = (update.effective_message.text or "")[:80]
+            logging.error(f"  ↳ Failed on user input: '{user_text}' "
+                          f"(chat={update.effective_chat.id if update.effective_chat else '?'})")
     except Exception:
         pass
+
+    # محاولة إرسال رسالة للمستخدم
+    try:
+        if update and hasattr(update, 'effective_message') and update.effective_message:
+            # نستخدم رسالة عادية (بدون Markdown) عشان لو Markdown نفسه السبب
+            error_text = "⚠️ حدث خطأ مؤقت — حاول مرة ثانية"
+            if "parse" in err_msg.lower() or "markdown" in err_msg.lower():
+                error_text = ("⚠️ خطأ في تنسيق الرسالة — جرب أمر آخر\n"
+                              "(تم الإبلاغ عن المشكلة)")
+            await update.effective_message.reply_text(error_text)
+    except Exception as send_err:
+        logging.error(f"  ↳ Even error reply failed: {send_err}")
 
 
 # ==================================================

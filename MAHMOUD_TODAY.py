@@ -178,6 +178,16 @@ def get_top_3_catalysts() -> List[Dict]:
     return cats[:3]
 
 
+def _esc_md(s: str) -> str:
+    """يهرب رموز Markdown الخاصة"""
+    if not s:
+        return ""
+    s = str(s)
+    for ch in ("_", "*", "[", "]", "`"):
+        s = s.replace(ch, "\\" + ch)
+    return s
+
+
 def fmt_top_3_catalysts() -> str:
     cats = get_top_3_catalysts()
     if not cats:
@@ -186,9 +196,11 @@ def fmt_top_3_catalysts() -> str:
                 "_السوق في وضع \"بلا محرك\"_")
     msg = "🎯 *أهم 3 Catalysts قادمة:*\n\n"
     for i, c in enumerate(cats, 1):
-        msg += f"*{i}. {c['emoji']} {c['title']}*\n"
-        msg += f"   ⏰ {c['when']}\n"
-        msg += f"   _{c['details']}_\n"
+        title = _esc_md(c.get('title', ''))
+        details = _esc_md(c.get('details', ''))
+        msg += f"*{i}. {c['emoji']} {title}*\n"
+        msg += f"   ⏰ {_esc_md(c.get('when', ''))}\n"
+        msg += f"   _{details}_\n"
         if c.get("url"):
             msg += f"   [التفاصيل]({c['url']})\n"
         msg += "\n"

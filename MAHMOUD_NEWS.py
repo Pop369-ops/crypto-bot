@@ -331,6 +331,17 @@ def process_and_store_news() -> Tuple[int, List[Dict]]:
 # Display formatting
 # ─────────────────────────────────────────────
 
+def _esc_md(s: str) -> str:
+    """يهرب رموز Markdown الخاصة لتجنب parse errors"""
+    if not s:
+        return ""
+    s = str(s)
+    # نهرب: _ * [ ] ` (الأكثر شيوعاً في العناوين)
+    for ch in ("_", "*", "[", "]", "`"):
+        s = s.replace(ch, "\\" + ch)
+    return s
+
+
 def fmt_news_item(item: Dict, idx: Optional[int] = None) -> str:
     """تنسيق خبر واحد للعرض"""
     impact = item.get("impact", 0)
@@ -343,17 +354,19 @@ def fmt_news_item(item: Dict, idx: Optional[int] = None) -> str:
     impact_emoji = "🔥" if impact >= 9 else ("⚡" if impact >= 7 else "📰")
 
     prefix = f"{idx}. " if idx else ""
-    title = item.get("title", "").strip()
-    source = item.get("source", "")
+    title = _esc_md(item.get("title", "").strip())
+    source = _esc_md(item.get("source", ""))
     url = item.get("url", "")
-    coins_tag = "  ".join([f"#{c}" for c in coins[:5]]) if coins else ""
+    coins_tag = "  ".join([f"#{_esc_md(c)}" for c in coins[:5]]) if coins else ""
 
     msg = f"{prefix}{impact_emoji} {s_emoji} *{title}*\n"
     if coins_tag:
         msg += f"   {coins_tag}\n"
     msg += f"   _{source} • تأثير {impact}/10_\n"
     if url:
-        msg += f"   [اقرأ المزيد]({url})\n"
+        # في الـURL نهرب فقط الـ ) عشان ما يكسرش الـlink
+        safe_url = url.replace(")", "%29")
+        msg += f"   [اقرأ المزيد]({safe_url})\n"
     return msg
 
 
