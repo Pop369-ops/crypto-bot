@@ -2168,11 +2168,61 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
         report.append(f"   MASSIVE_API_KEY: "
                       f"{'✅' if cal_mod.MASSIVE_API_KEY else '❌'}")
         ai_st = ai_mod.ai_status()
-        report.append(f"   AI Brains: Claude={'✅' if ai_st['claude'] else '❌'} "
+        report.append(f"   AI Brains keys: Claude={'✅' if ai_st['claude'] else '❌'} "
                       f"Gemini={'✅' if ai_st['gemini'] else '❌'} "
                       f"OpenAI={'✅' if ai_st['openai'] else '❌'}")
         report.append(f"   WHALE_ALERT_KEY: "
                       f"{'✅' if whale_mod.is_available() else '❌'}")
+
+        # ④b Live AI test (ping كل واحد متاح)
+        report.append("")
+        report.append("🧪 AI Live Test:")
+
+        if ai_st['claude']:
+            try:
+                r = ai_mod.call_claude("Reply with just: OK", max_tokens=10)
+                if r.get("ok"):
+                    report.append(f"   Claude: ✅ شغّال")
+                else:
+                    err = r.get("error", "?")
+                    detail = r.get("detail", "")[:80]
+                    report.append(f"   Claude: ❌ {err}")
+                    if detail:
+                        report.append(f"            {detail}")
+            except Exception as e:
+                report.append(f"   Claude: ❌ {type(e).__name__}: {str(e)[:80]}")
+
+        if ai_st['gemini']:
+            try:
+                r = ai_mod.call_gemini("Reply with just: OK", max_tokens=10)
+                if r.get("ok"):
+                    report.append(f"   Gemini: ✅ شغّال")
+                else:
+                    err = r.get("error", "?")
+                    detail = r.get("detail", "")[:80]
+                    report.append(f"   Gemini: ❌ {err}")
+                    if detail:
+                        report.append(f"            {detail}")
+            except Exception as e:
+                report.append(f"   Gemini: ❌ {type(e).__name__}: {str(e)[:80]}")
+
+        if ai_st['openai']:
+            try:
+                r = ai_mod.call_openai("Reply with just: OK", max_tokens=10)
+                if r.get("ok"):
+                    report.append(f"   OpenAI: ✅ شغّال")
+                else:
+                    err = r.get("error", "?")
+                    detail = r.get("detail", "")[:80]
+                    report.append(f"   OpenAI: ❌ {err}")
+                    if detail:
+                        report.append(f"            {detail}")
+            except Exception as e:
+                report.append(f"   OpenAI: ❌ {type(e).__name__}: {str(e)[:80]}")
+
+        if not any([ai_st['claude'], ai_st['gemini'], ai_st['openai']]):
+            report.append("   ⚠️ لا توجد AI keys في Variables")
+        report.append("")
 
         # ⑤ Critical functions
         report.append("🔧 Functions:")
@@ -2489,7 +2539,13 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
                 ai_mod.fmt_consensus(sym, cons),
                 parse_mode="Markdown")
         except Exception as e:
-            await u.message.reply_text(f"❌ خطأ: {str(e)[:100]}")
+            import traceback as _tb
+            tb = _tb.format_exc()[:300]
+            await u.message.reply_text(
+                f"❌ خطأ: {type(e).__name__}: {str(e)[:100]}\n\n"
+                f"📋 جرب: `صحة` لمعرفة حالة AI",
+                parse_mode="Markdown")
+            logging.error(f"اجماع failed for {sym}: {tb}")
         return
 
     # ── سؤال حر ──

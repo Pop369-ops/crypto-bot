@@ -442,6 +442,20 @@ def get_consensus_recommendation(symbol: str, R: Dict,
     results = call_all_ais(prompt)
     cons = consensus(results)
     cons["ok"] = cons["n_ais"] > 0
+
+    # لو فشل، نضيف تفاصيل الأخطاء من كل AI
+    if not cons["ok"]:
+        ai_errors = {}
+        for name, res in results.items():
+            if not res.get("ok"):
+                err = res.get("error", "unknown")
+                detail = res.get("detail", "")
+                ai_errors[name] = f"{err}" + (f" — {detail[:100]}" if detail else "")
+            elif not extract_json(res.get("text", "")):
+                ai_errors[name] = "ok_but_no_json"
+        cons["ai_errors"] = ai_errors
+        cons["error"] = "all_ais_failed_or_invalid"
+
     return cons
 
 
@@ -491,7 +505,19 @@ def ask_question(question: str, prefer: str = "consensus") -> Dict:
 
 def fmt_consensus(symbol: str, cons: Dict) -> str:
     if not cons.get("ok"):
-        return f"❌ AI Analysis فشل: {cons.get('error', 'unknown')}"
+        msg = f"❌ *AI Analysis فشل*\n\n"
+        msg += f"السبب: `{cons.get('error', 'unknown')}`\n\n"
+        ai_errs = cons.get("ai_errors", {})
+        if ai_errs:
+            msg += "*تفاصيل لكل AI:*\n"
+            for name, err in ai_errs.items():
+                # نهرب الـ_ في error message
+                safe_err = str(err).replace("_", "\\_").replace("*", "\\*")
+                msg += f"  • {name}: `{safe_err[:150]}`\n"
+            msg += "\n💡 جرب `صحة` للاختبار المباشر"
+        else:
+            msg += "💡 شغّل `صحة` لاختبار AI keys"
+        return msg
 
     action = cons["action"]
     conf = cons["confidence"]
