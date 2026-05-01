@@ -273,23 +273,15 @@ def fetch_massive_news(limit: int = 50) -> List[Dict]:
     return items
 
 
-def process_and_store_news() -> Tuple[int, List[Dict]]:
+def process_and_store_news(do_ai: bool = False) -> Tuple[int, List[Dict]]:
     """
-    يجلب الأخبار، يخزن الجديدة، يحلل بـAI تلقائياً، ويرجع (count_new, breaking_news).
-    AI Analysis تلقائي للأخبار 5+/10 (يخزن في seen_news.ai_summary).
+    يجلب الأخبار ويخزنها فقط (سريع، لا AI).
+    AI يتعامل في job منفصل (background) لتجنب الحجب.
+    do_ai=True فقط للاستخدام الصريح (e.g. حلل_الكل).
     """
     items = fetch_all_feeds()
     new_items = []
     breaking = []
-
-    # نحاول تحميل AI module (اختياري)
-    ai_module = None
-    try:
-        import MAHMOUD_AI as ai_module
-        if not ai_module.has_any_ai():
-            ai_module = None
-    except Exception:
-        ai_module = None
 
     for it in items:
         h = url_hash(it["url"])
@@ -297,7 +289,6 @@ def process_and_store_news() -> Tuple[int, List[Dict]]:
             continue
         impact = score_impact(it["title"], it["summary"])
 
-        # نفضل sentiment من Massive لو متاح
         if it.get("_massive_sentiment"):
             sentiment = it["_massive_sentiment"]
             sentiment_map = {"positive": "bullish", "negative": "bearish",
@@ -306,7 +297,6 @@ def process_and_store_news() -> Tuple[int, List[Dict]]:
         else:
             sentiment = detect_sentiment(it["title"], it["summary"])
 
-        # tickers
         if it.get("_massive_tickers"):
             coins = []
             for t in it["_massive_tickers"]:
@@ -321,48 +311,11 @@ def process_and_store_news() -> Tuple[int, List[Dict]]:
 
         coins_str = ",".join(coins) if coins else None
 
-        # ① خزّن الخبر
         nid = db.insert_news(h, it["url"], it["title"], it["source"],
                              it["published"], impact, coins_str, sentiment,
                              summary=(it.get("summary") or "")[:1000])
         if nid <= 0:
             continue
-
-        # ② حلّل بـAI لو الـimpact ≥ 5 (تلقائي!)
-        if ai_module and impact >= 5:
-            try:
-                ai_result = ai_module.analyze_news_item(
-                    it["title"],
-                    it.get("summary", ""),
-                    it.get("source", ""),
-                    coins,
-                    prefer="claude"
-                )
-                if ai_result.get("ok"):
-                    a = ai_result["analysis"]
-                    db.update_news_ai(
-                        news_id=nid,
-                        ai_summary=a.get("summary_ar", "")[:500],
-                        ai_action=a.get("action_ar", "")[:500],
-                        ai_levels=a.get("key_levels_ar", "")[:300],
-                        ai_horizon=a.get("horizon", "hours"),
-                        ai_sentiment=a.get("direction", sentiment),
-                        ai_impact=a.get("impact_score", impact),
-                    )
-                    # نضيف الـAI data للـitem (للـbreaking job)
-                    it["ai_summary"] = a.get("summary_ar", "")
-                    it["ai_action"] = a.get("action_ar", "")
-                    it["ai_levels"] = a.get("key_levels_ar", "")
-                    it["ai_horizon"] = a.get("horizon", "hours")
-                    # تحديث sentiment/impact من الـAI (أدق)
-                    sentiment = a.get("direction", sentiment)
-                    if a.get("impact_score") is not None:
-                        try:
-                            impact = int(a["impact_score"])
-                        except (ValueError, TypeError):
-                            pass
-            except Exception as e:
-                logging.warning(f"AI analysis failed for news {nid}: {e}")
 
         it["impact"] = impact
         it["sentiment"] = sentiment
@@ -373,6 +326,64 @@ def process_and_store_news() -> Tuple[int, List[Dict]]:
             breaking.append(it)
 
     return len(new_items), breaking
+
+
+async def ai_analyze_pending_news(max_items: int = 5,
+                                  min_impact: int = 5) -> int:
+    """
+    Background AI analysis — يحلل الأخبار اللي مفيش لها AI بعد.
+    Async-safe: يستدعي الـAI في thread executor و يضع sleep بين كل تحليل.
+    يرجع عدد الأخبار اللي تم تحليلها.
+    """
+    try:
+        import MAHMOUD_AI as ai_module
+        if not ai_module.has_any_ai():
+            return 0
+    except Exception:
+        return 0
+
+    pending = db.get_news_without_ai(hours=12, limit=max_items)
+    if not pending:
+        return 0
+
+    analyzed = 0
+    loop = asyncio.get_event_loop()
+
+    for n in pending:
+        if (n.get("impact") or 0) < min_impact:
+            continue
+        try:
+            coins_list = (n.get("coins") or "").split(",") if n.get("coins") else []
+            coins_list = [c.strip() for c in coins_list if c.strip()]
+            # Run in thread executor (async-safe)
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda nn=n, cc=coins_list: ai_module.analyze_news_item(
+                        nn["title"], nn.get("summary", ""),
+                        nn.get("source", ""), cc, prefer="claude"
+                    )
+                ),
+                timeout=30
+            )
+            if result.get("ok"):
+                a = result["analysis"]
+                db.update_news_ai(
+                    news_id=n["id"],
+                    ai_summary=a.get("summary_ar", "")[:500],
+                    ai_action=a.get("action_ar", "")[:500],
+                    ai_levels=a.get("key_levels_ar", "")[:300],
+                    ai_horizon=a.get("horizon", "hours"),
+                    ai_sentiment=a.get("direction"),
+                    ai_impact=a.get("impact_score"),
+                )
+                analyzed += 1
+            await asyncio.sleep(1)  # سلس على الـAPI
+        except (asyncio.TimeoutError, Exception) as e:
+            logging.warning(f"AI analysis timeout/err for news {n.get('id')}: {e}")
+            continue
+
+    return analyzed
 
 
 # ─────────────────────────────────────────────
@@ -468,78 +479,60 @@ def get_breaking_msg(items: List[Dict]) -> str:
 
 async def news_check_job(ctx):
     """
-    يشتغل كل 15 دقيقة.
-    يجلب الأخبار، يخزنها، ويبعت العاجل + تحليل AI للمشتركين.
+    يشتغل كل 15 دقيقة. سريع — فقط fetch + store.
+    AI تحليل في job منفصل (ai_analysis_job) لتجنب blocking.
     """
     try:
-        count, breaking = process_and_store_news()
+        # ① جلب وتخزين سريع (بدون AI)
+        loop = asyncio.get_event_loop()
+        count, breaking = await loop.run_in_executor(
+            None, process_and_store_news
+        )
         if count > 0:
             logging.info(f"News: +{count} new items, {len(breaking)} breaking")
 
-        if not breaking:
-            return
-
-        # نحاول استدعاء AI Module (اختياري)
-        ai_module = None
-        try:
-            import MAHMOUD_AI as ai_module
-            if not ai_module.has_any_ai():
-                ai_module = None
-        except Exception:
-            ai_module = None
-
-        # نبعت العاجل (impact >= 7)
+        # ② إرسال الـbreaking بدون AI أولاً (سريع)
         for item in breaking:
             min_impact = item["impact"]
             subscribers = db.get_breaking_subscribers(min_impact)
             for sub in subscribers:
-                # فلتر العملات
                 coins_filter = sub.get("coins_filter") or ""
                 if coins_filter:
                     user_coins = [c.strip().upper() for c in coins_filter.split(",")]
                     item_coins = item.get("coins", [])
                     if not any(c in user_coins for c in item_coins):
                         continue
-                # فلتر الـimpact للمستخدم
                 if item["impact"] < sub.get("min_impact", 7):
                     continue
                 try:
-                    # ① نبعت الخبر الأصلي
                     await ctx.bot.send_message(
                         chat_id=sub["chat_id"],
                         text=get_breaking_msg([item]),
                         parse_mode="Markdown",
                         disable_web_page_preview=False,
                     )
-
-                    # ② نبعت تحليل AI تلقائياً (لو AI مفعّل وللأخبار 8+)
-                    if ai_module and item["impact"] >= 8:
-                        try:
-                            coins_list = item.get("coins", [])
-                            if isinstance(coins_list, str):
-                                coins_list = [c.strip() for c in coins_list.split(",") if c.strip()]
-                            ai_result = ai_module.analyze_news_item(
-                                item["title"],
-                                item.get("summary", ""),
-                                item.get("source", ""),
-                                coins_list,
-                                prefer="claude",
-                            )
-                            if ai_result.get("ok"):
-                                ai_msg = ai_module.fmt_news_analysis(
-                                    item["title"],
-                                    ai_result["analysis"],
-                                    item.get("url", ""),
-                                )
-                                await ctx.bot.send_message(
-                                    chat_id=sub["chat_id"],
-                                    text=ai_msg,
-                                    parse_mode="Markdown",
-                                    disable_web_page_preview=True,
-                                )
-                        except Exception as e:
-                            logging.warning(f"News AI analysis failed: {e}")
                 except Exception:
                     pass
+
+        # ③ AI analysis للـpending (background — لا يحجب)
+        # نحلل بحد أقصى 3 أخبار/دورة لتجنب الإرهاق
+        try:
+            analyzed = await ai_analyze_pending_news(max_items=3, min_impact=6)
+            if analyzed > 0:
+                logging.info(f"AI analyzed {analyzed} pending news items")
+        except Exception as e:
+            logging.warning(f"AI background analysis failed: {e}")
     except Exception as e:
         logging.error(f"news_check_job error: {e}")
+
+
+async def ai_analysis_job(ctx):
+    """
+    Job منفصل كل 5 دقائق — يحلل أي خبر بدون AI.
+    """
+    try:
+        analyzed = await ai_analyze_pending_news(max_items=3, min_impact=5)
+        if analyzed > 0:
+            logging.info(f"[ai_job] analyzed {analyzed} news items")
+    except Exception as e:
+        logging.warning(f"ai_analysis_job error: {e}")

@@ -2266,7 +2266,7 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── حلل_الكل: backfill AI للأخبار الموجودة (الجديد) ──
+    # ── حلل_الكل: backfill AI للأخبار الموجودة ──
     if text in ("حلل_الكل", "حلل الكل", "backfill_ai", "تحليل_شامل"):
         if not ai_mod.has_any_ai():
             await u.message.reply_text(
@@ -2278,57 +2278,33 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # نجلب الأخبار اللي ما اتحللتش بـAI
-        pending = db.get_news_without_ai(hours=48, limit=15)
-        if not pending:
+        # نعد أولاً
+        pending_count = len(db.get_news_without_ai(hours=48, limit=100))
+        if pending_count == 0:
             await u.message.reply_text(
                 "✅ كل الأخبار اتحللت بالفعل\n"
-                "_الأخبار الجديدة تتحلل تلقائياً عند وصولها_")
+                "_الأخبار الجديدة تتحلل تلقائياً كل 5 دقائق_")
             return
 
         wait = await u.message.reply_text(
-            f"🧠 جاري تحليل {len(pending)} خبر... (~{len(pending)*5} ثانية)")
-
-        analyzed = 0
-        failed = 0
-        for n in pending:
-            try:
-                coins_list = (n.get("coins") or "").split(",") if n.get("coins") else []
-                coins_list = [c.strip() for c in coins_list if c.strip()]
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: ai_mod.analyze_news_item(
-                        n["title"], n.get("summary", ""),
-                        n.get("source", ""), coins_list,
-                        prefer="claude"
-                    )
-                )
-                if result.get("ok"):
-                    a = result["analysis"]
-                    db.update_news_ai(
-                        news_id=n["id"],
-                        ai_summary=a.get("summary_ar", "")[:500],
-                        ai_action=a.get("action_ar", "")[:500],
-                        ai_levels=a.get("key_levels_ar", "")[:300],
-                        ai_horizon=a.get("horizon", "hours"),
-                        ai_sentiment=a.get("direction"),
-                        ai_impact=a.get("impact_score"),
-                    )
-                    analyzed += 1
-                else:
-                    failed += 1
-            except Exception:
-                failed += 1
-            # لا نُغرق الـAPI
-            await asyncio.sleep(1)
-
-        await wait.edit_text(
-            f"✅ *تم تحليل الأخبار*\n\n"
-            f"✓ نجح: {analyzed}\n"
-            f"✗ فشل: {failed}\n\n"
-            f"الآن جرب `أخبار` لتشوف التحليلات",
+            f"🧠 جاري تحليل {min(pending_count, 10)} خبر...\n"
+            f"_(~{min(pending_count, 10) * 6} ثانية)_",
             parse_mode="Markdown")
+
+        try:
+            # نستخدم الـasync-safe function
+            analyzed = await news_mod.ai_analyze_pending_news(
+                max_items=10, min_impact=5)
+
+            await wait.edit_text(
+                f"✅ *تم تحليل الأخبار*\n\n"
+                f"✓ نجح: {analyzed}\n"
+                f"المتبقي للتحليل: ~{pending_count - analyzed}\n\n"
+                f"الآن جرب `أخبار` لتشوف التحليلات\n"
+                f"_الباقي يتحلل تلقائياً كل 5 دقائق_",
+                parse_mode="Markdown")
+        except Exception as e:
+            await wait.edit_text(f"❌ خطأ: {str(e)[:150]}")
         return
 
     # ── تحليل AI لخبر معين ──
@@ -3270,6 +3246,14 @@ def main():
         interval=900,
         first=60,
         name="news_check",
+    )
+
+    # ③b تحليل AI للأخبار في الخلفية كل 5 دقائق (sync-safe)
+    app.job_queue.run_repeating(
+        news_mod.ai_analysis_job,
+        interval=300,
+        first=180,
+        name="ai_analysis",
     )
 
     # ④ Whale Alert كل 10 دقائق (لو الـAPI key متاح)
