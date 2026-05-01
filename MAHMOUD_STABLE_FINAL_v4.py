@@ -2031,6 +2031,98 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── Health Check (تشخيصي — يفحص كل المكونات) ──
+    if text in ("صحة", "health", "تشخيص", "/health"):
+        report = ["🏥 *Health Check — v4.2*\n"]
+
+        # ① DB
+        try:
+            import sqlite3 as _sql
+            conn = db.get_conn()
+            tbls = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+            tbl_names = [t["name"] for t in tbls]
+            conn.close()
+            expected = ["tracked_trades", "trade_alerts_sent", "risk_protection",
+                        "trade_journal", "seen_news", "news_subscribers",
+                        "ai_recommendations", "cache_store", "whale_alerts",
+                        "scanner_subscribers", "scanner_alerts_sent"]
+            missing = [t for t in expected if t not in tbl_names]
+            if not missing:
+                report.append(f"✅ DB: {len(tbl_names)} جدول (كامل)")
+            else:
+                report.append(f"⚠️ DB: ناقص {len(missing)} جدول")
+                report.append(f"   مفقود: {', '.join(missing)}")
+        except Exception as e:
+            report.append(f"❌ DB: {type(e).__name__}: {str(e)[:80]}")
+
+        # ② DB Path & Permissions
+        try:
+            import os as _os
+            db_path = db.DB_PATH
+            exists = _os.path.exists(db_path)
+            writable = _os.access(_os.path.dirname(db_path) or ".", _os.W_OK)
+            size = _os.path.getsize(db_path) if exists else 0
+            report.append(f"📁 DB Path: `{db_path}`")
+            report.append(f"   موجود: {exists} | قابل للكتابة: {writable} | حجم: {size}b")
+        except Exception as e:
+            report.append(f"⚠️ Path check: {e}")
+
+        # ③ Modules
+        mods = [
+            ("news_mod", news_mod), ("cal_mod", cal_mod),
+            ("today_mod", today_mod), ("ai_mod", ai_mod),
+            ("whale_mod", whale_mod), ("bt_mod", bt_mod),
+            ("lt_mod", lt_mod), ("signals", signals),
+            ("tracker", tracker), ("risk", risk),
+        ]
+        loaded = sum(1 for _, m in mods if m is not None)
+        report.append(f"📦 Modules: {loaded}/{len(mods)} loaded")
+
+        # ④ API Keys
+        report.append("🔑 API Keys:")
+        report.append(f"   ETHERSCAN_KEY: {'✅' if ETHERSCAN_KEY else '❌'}")
+        report.append(f"   MASSIVE_API_KEY: "
+                      f"{'✅' if cal_mod.MASSIVE_API_KEY else '❌'}")
+        ai_st = ai_mod.ai_status()
+        report.append(f"   AI Brains: Claude={'✅' if ai_st['claude'] else '❌'} "
+                      f"Gemini={'✅' if ai_st['gemini'] else '❌'} "
+                      f"OpenAI={'✅' if ai_st['openai'] else '❌'}")
+        report.append(f"   WHALE_ALERT_KEY: "
+                      f"{'✅' if whale_mod.is_available() else '❌'}")
+
+        # ⑤ Critical functions
+        report.append("🔧 Functions:")
+        try:
+            j = db.journal_stats(chat_id, 30)
+            report.append(f"   journal_stats: ✅ ({j['total']} صفقات)")
+        except Exception as e:
+            report.append(f"   journal_stats: ❌ {type(e).__name__}: {str(e)[:60]}")
+
+        try:
+            n = db.get_recent_news(hours=24, min_impact=0, limit=1)
+            report.append(f"   get_recent_news: ✅ ({len(n)} خبر في DB)")
+        except Exception as e:
+            report.append(f"   get_recent_news: ❌ {type(e).__name__}: {str(e)[:60]}")
+
+        try:
+            w = db.get_recent_whales(hours=24, limit=1)
+            report.append(f"   get_recent_whales: ✅ ({len(w)} حوت)")
+        except Exception as e:
+            report.append(f"   get_recent_whales: ❌ {type(e).__name__}: {str(e)[:60]}")
+
+        try:
+            s = db.get_scanner_subscriber(chat_id)
+            report.append(f"   scanner_subscriber: "
+                          f"✅ {'مشترك' if s else 'غير مشترك'}")
+        except Exception as e:
+            report.append(f"   scanner_subscriber: ❌ {type(e).__name__}: {str(e)[:60]}")
+
+        # نرسل بدون Markdown عشان لا يفشل
+        await u.message.reply_text("\n".join(report))
+        return
+
     # ── عاجل (الأخبار العالية التأثير فقط) ──
     if text in ("عاجل", "breaking"):
         await u.message.reply_text(
@@ -2448,7 +2540,7 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
             f"*المؤشرات الموزونة (15):*\n"
             f"• ICT/SMC: 3 | MTF: 2 | MACD: 2\n"
             f"• EMA Stack: 2 | RSI: 1 | CVD: 1\n"
-            f"• Funding/OI/L\\-S/Liq: 1+1+1+1 _(فيوتشر فقط)_\n\n"
+            f"• Funding/OI/LS/Liq: 1+1+1+1 _(فيوتشر فقط)_\n\n"
             f"💾 _الاشتراك محفوظ بعد restart_\n"
             f"🛡 *Cooldown:* 4 ساعات لكل عملة\n\n"
             f"`ماسح 13` أقوى | `ماسح 9` أكثر إشارات\n"
@@ -2602,30 +2694,43 @@ async def handle_btn(u: Update, c: ContextTypes.DEFAULT_TYPE):
 # ==================================================
 
 async def error_handler(update, context):
-    """يسجل تفاصيل الخطأ + يحاول إرسال رد بدون Markdown لو الـMarkdown هو السبب"""
+    """يسجل تفاصيل الخطأ + يكشف نوعه للمستخدم لأغراض التشخيص"""
     err = context.error
     err_type = type(err).__name__
-    err_msg = str(err)[:200]
-    logging.error(f"Bot error [{err_type}]: {err_msg}")
+    err_msg = str(err)[:300]
 
-    # طباعة في الـlog مع تفاصيل الـupdate
+    # Traceback كامل للـlog
+    import traceback as _tb
+    tb_str = "".join(_tb.format_exception(type(err), err, err.__traceback__))
+    logging.error(f"Bot error [{err_type}]: {err_msg}")
+    logging.error(f"Traceback:\n{tb_str[:2000]}")
+
+    # تفاصيل الـupdate
+    user_text = ""
+    chat_id = "?"
     try:
         if update and hasattr(update, 'effective_message') and update.effective_message:
             user_text = (update.effective_message.text or "")[:80]
-            logging.error(f"  ↳ Failed on user input: '{user_text}' "
-                          f"(chat={update.effective_chat.id if update.effective_chat else '?'})")
+        if update and hasattr(update, 'effective_chat') and update.effective_chat:
+            chat_id = update.effective_chat.id
+        logging.error(f"  ↳ Failed input: '{user_text}' (chat={chat_id})")
     except Exception:
         pass
 
-    # محاولة إرسال رسالة للمستخدم
+    # محاولة إرسال رسالة تشخيصية (بدون Markdown)
     try:
         if update and hasattr(update, 'effective_message') and update.effective_message:
-            # نستخدم رسالة عادية (بدون Markdown) عشان لو Markdown نفسه السبب
-            error_text = "⚠️ حدث خطأ مؤقت — حاول مرة ثانية"
-            if "parse" in err_msg.lower() or "markdown" in err_msg.lower():
-                error_text = ("⚠️ خطأ في تنسيق الرسالة — جرب أمر آخر\n"
-                              "(تم الإبلاغ عن المشكلة)")
-            await update.effective_message.reply_text(error_text)
+            # نرسل تفاصيل تشخيصية مفيدة بدون Markdown parsing
+            diag = (
+                f"⚠️ خطأ في تنفيذ الأمر\n\n"
+                f"الأمر: {user_text}\n"
+                f"النوع: {err_type}\n"
+                f"التفاصيل: {err_msg[:180]}"
+            )
+            await update.effective_message.reply_text(
+                diag,
+                disable_web_page_preview=True,
+            )
     except Exception as send_err:
         logging.error(f"  ↳ Even error reply failed: {send_err}")
 
