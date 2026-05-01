@@ -125,11 +125,27 @@ def init_db():
         seen_at     TEXT    NOT NULL,
         impact      INTEGER DEFAULT 0,        -- 0-10 (AI scored)
         coins       TEXT,                     -- مفصول بفاصلات: BTC,ETH
-        sentiment   TEXT                      -- bullish/bearish/neutral
+        sentiment   TEXT,                     -- bullish/bearish/neutral
+        ai_summary  TEXT,                     -- v4.4: AI ملخص الخبر
+        ai_action   TEXT,                     -- v4.4: ماذا يفعل المتداول
+        ai_levels   TEXT,                     -- v4.4: مستويات مهمة
+        ai_horizon  TEXT,                     -- v4.4: المدى الزمني
+        summary     TEXT                      -- ملخص أصلي من المصدر
     )
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_news_seen ON seen_news(seen_at DESC)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_news_impact ON seen_news(impact DESC, seen_at DESC)")
+
+    # Migration: add AI columns to existing tables (if any column missing)
+    try:
+        existing_cols = [r[1] for r in c.execute("PRAGMA table_info(seen_news)").fetchall()]
+        for col, ddl in [("ai_summary", "TEXT"), ("ai_action", "TEXT"),
+                          ("ai_levels", "TEXT"), ("ai_horizon", "TEXT"),
+                          ("summary", "TEXT")]:
+            if col not in existing_cols:
+                c.execute(f"ALTER TABLE seen_news ADD COLUMN {col} {ddl}")
+    except Exception:
+        pass
 
     # ── المشتركون في تنبيهات الأخبار + التقرير اليومي ──
     c.execute("""
@@ -532,22 +548,63 @@ def news_seen(url_hash: str) -> bool:
 def insert_news(url_hash: str, url: str, title: str, source: str,
                 published: str, impact: int = 0,
                 coins: Optional[str] = None,
-                sentiment: Optional[str] = None) -> int:
+                sentiment: Optional[str] = None,
+                summary: Optional[str] = None) -> int:
     conn = get_conn()
     c = conn.cursor()
     try:
         c.execute("""
         INSERT INTO seen_news
-        (url_hash, url, title, source, published, seen_at, impact, coins, sentiment)
-        VALUES (?,?,?,?,?,?,?,?,?)
+        (url_hash, url, title, source, published, seen_at, impact, coins,
+         sentiment, summary)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
         """, (url_hash, url, title, source, published,
-              datetime.utcnow().isoformat(), impact, coins, sentiment))
+              datetime.utcnow().isoformat(), impact, coins, sentiment, summary))
         nid = c.lastrowid
         conn.commit()
     except sqlite3.IntegrityError:
         nid = 0
     conn.close()
     return nid
+
+
+def update_news_ai(news_id: int, ai_summary: str, ai_action: str = None,
+                   ai_levels: str = None, ai_horizon: str = None,
+                   ai_sentiment: str = None, ai_impact: int = None) -> None:
+    """يحدث تحليل AI لخبر معين"""
+    conn = get_conn()
+    c = conn.cursor()
+    fields, values = ["ai_summary = ?"], [ai_summary]
+    if ai_action is not None:
+        fields.append("ai_action = ?"); values.append(ai_action)
+    if ai_levels is not None:
+        fields.append("ai_levels = ?"); values.append(ai_levels)
+    if ai_horizon is not None:
+        fields.append("ai_horizon = ?"); values.append(ai_horizon)
+    if ai_sentiment is not None:
+        fields.append("sentiment = ?"); values.append(ai_sentiment)
+    if ai_impact is not None:
+        fields.append("impact = ?"); values.append(ai_impact)
+    values.append(news_id)
+    c.execute(f"UPDATE seen_news SET {', '.join(fields)} WHERE id = ?", values)
+    conn.commit()
+    conn.close()
+
+
+def get_news_without_ai(hours: int = 24, limit: int = 10) -> List[Dict]:
+    """يرجع أخبار جديدة لم يتم تحليلها بـAI بعد (impact >= 5 أولاً)"""
+    conn = get_conn()
+    c = conn.cursor()
+    cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+    c.execute("""
+    SELECT * FROM seen_news
+    WHERE seen_at >= ? AND ai_summary IS NULL AND impact >= 5
+    ORDER BY impact DESC, seen_at DESC
+    LIMIT ?
+    """, (cutoff, limit))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
 
 
 def get_recent_news(hours: int = 24, min_impact: int = 0,

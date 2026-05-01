@@ -275,12 +275,21 @@ def fetch_massive_news(limit: int = 50) -> List[Dict]:
 
 def process_and_store_news() -> Tuple[int, List[Dict]]:
     """
-    يجلب الأخبار، يخزن الجديدة فقط، ويرجع (count_new, breaking_news)
-    breaking_news = الأخبار اللي impact >= 7 (مرشحة للتنبيه)
+    يجلب الأخبار، يخزن الجديدة، يحلل بـAI تلقائياً، ويرجع (count_new, breaking_news).
+    AI Analysis تلقائي للأخبار 5+/10 (يخزن في seen_news.ai_summary).
     """
     items = fetch_all_feeds()
     new_items = []
     breaking = []
+
+    # نحاول تحميل AI module (اختياري)
+    ai_module = None
+    try:
+        import MAHMOUD_AI as ai_module
+        if not ai_module.has_any_ai():
+            ai_module = None
+    except Exception:
+        ai_module = None
 
     for it in items:
         h = url_hash(it["url"])
@@ -288,41 +297,80 @@ def process_and_store_news() -> Tuple[int, List[Dict]]:
             continue
         impact = score_impact(it["title"], it["summary"])
 
-        # نفضل sentiment من Massive لو متاح (أدق)
+        # نفضل sentiment من Massive لو متاح
         if it.get("_massive_sentiment"):
-            sentiment = it["_massive_sentiment"]  # positive/negative/neutral
-            # نوحد الأسماء
+            sentiment = it["_massive_sentiment"]
             sentiment_map = {"positive": "bullish", "negative": "bearish",
                              "neutral": "neutral"}
             sentiment = sentiment_map.get(sentiment, sentiment)
         else:
             sentiment = detect_sentiment(it["title"], it["summary"])
 
-        # نفضل tickers من Massive لو متاح (دقيقة 100%)
+        # tickers
         if it.get("_massive_tickers"):
-            # نحول X:BTCUSD → BTC
             coins = []
             for t in it["_massive_tickers"]:
                 if t.startswith("X:") and "USD" in t:
                     sym = t.replace("X:", "").replace("USD", "")
                     if sym and sym not in coins:
                         coins.append(sym)
-            if not coins:  # fallback
+            if not coins:
                 coins = detect_coins(it["title"], it["summary"])
         else:
             coins = detect_coins(it["title"], it["summary"])
 
         coins_str = ",".join(coins) if coins else None
 
+        # ① خزّن الخبر
         nid = db.insert_news(h, it["url"], it["title"], it["source"],
-                             it["published"], impact, coins_str, sentiment)
-        if nid > 0:
-            it["impact"] = impact
-            it["sentiment"] = sentiment
-            it["coins"] = coins
-            new_items.append(it)
-            if impact >= 7:
-                breaking.append(it)
+                             it["published"], impact, coins_str, sentiment,
+                             summary=(it.get("summary") or "")[:1000])
+        if nid <= 0:
+            continue
+
+        # ② حلّل بـAI لو الـimpact ≥ 5 (تلقائي!)
+        if ai_module and impact >= 5:
+            try:
+                ai_result = ai_module.analyze_news_item(
+                    it["title"],
+                    it.get("summary", ""),
+                    it.get("source", ""),
+                    coins,
+                    prefer="claude"
+                )
+                if ai_result.get("ok"):
+                    a = ai_result["analysis"]
+                    db.update_news_ai(
+                        news_id=nid,
+                        ai_summary=a.get("summary_ar", "")[:500],
+                        ai_action=a.get("action_ar", "")[:500],
+                        ai_levels=a.get("key_levels_ar", "")[:300],
+                        ai_horizon=a.get("horizon", "hours"),
+                        ai_sentiment=a.get("direction", sentiment),
+                        ai_impact=a.get("impact_score", impact),
+                    )
+                    # نضيف الـAI data للـitem (للـbreaking job)
+                    it["ai_summary"] = a.get("summary_ar", "")
+                    it["ai_action"] = a.get("action_ar", "")
+                    it["ai_levels"] = a.get("key_levels_ar", "")
+                    it["ai_horizon"] = a.get("horizon", "hours")
+                    # تحديث sentiment/impact من الـAI (أدق)
+                    sentiment = a.get("direction", sentiment)
+                    if a.get("impact_score") is not None:
+                        try:
+                            impact = int(a["impact_score"])
+                        except (ValueError, TypeError):
+                            pass
+            except Exception as e:
+                logging.warning(f"AI analysis failed for news {nid}: {e}")
+
+        it["impact"] = impact
+        it["sentiment"] = sentiment
+        it["coins"] = coins
+        it["id"] = nid
+        new_items.append(it)
+        if impact >= 7:
+            breaking.append(it)
 
     return len(new_items), breaking
 
@@ -343,14 +391,15 @@ def _esc_md(s: str) -> str:
 
 
 def fmt_news_item(item: Dict, idx: Optional[int] = None) -> str:
-    """تنسيق خبر واحد للعرض"""
+    """تنسيق خبر واحد للعرض — مع تحليل AI inline لو متاح"""
     impact = item.get("impact", 0)
     sentiment = item.get("sentiment", "neutral")
     coins = item.get("coins") or ""
     if isinstance(coins, str):
         coins = coins.split(",") if coins else []
 
-    s_emoji = {"bullish": "🟢", "bearish": "🔴", "neutral": "⚪"}.get(sentiment, "⚪")
+    s_emoji = {"bullish": "🟢", "bearish": "🔴",
+               "neutral": "⚪"}.get(sentiment, "⚪")
     impact_emoji = "🔥" if impact >= 9 else ("⚡" if impact >= 7 else "📰")
 
     prefix = f"{idx}. " if idx else ""
@@ -363,8 +412,21 @@ def fmt_news_item(item: Dict, idx: Optional[int] = None) -> str:
     if coins_tag:
         msg += f"   {coins_tag}\n"
     msg += f"   _{source} • تأثير {impact}/10_\n"
+
+    # ✨ NEW: AI analysis inline (Wall Street Pro style)
+    ai_summary = item.get("ai_summary")
+    ai_action = item.get("ai_action")
+    if ai_summary:
+        # Esc the AI text too
+        safe_summary = _esc_md(ai_summary)
+        msg += f"   🤖 *تحليل:* {safe_summary}\n"
+    if ai_action:
+        safe_action = _esc_md(ai_action)
+        # ناخذ أول جملة بس عشان ما يطول
+        first_line = safe_action.split("\n")[0][:200]
+        msg += f"   💡 *اعمل:* {first_line}\n"
+
     if url:
-        # في الـURL نهرب فقط الـ ) عشان ما يكسرش الـlink
         safe_url = url.replace(")", "%29")
         msg += f"   [اقرأ المزيد]({safe_url})\n"
     return msg

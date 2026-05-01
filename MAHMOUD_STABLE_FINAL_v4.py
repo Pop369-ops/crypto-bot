@@ -1887,7 +1887,9 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
         "`سؤال [نصك]` — اسأل أي شيء\n"
         "`حلل_خبر BTC` — AI يحلل آخر خبر BTC ⭐\n"
         "`حلل_خبر 1` — AI يحلل خبر بالرقم\n"
-        "`ملخص_يوم` — تقرير AI يومي شامل ⭐\n\n"
+        "`حلل_الكل` — تحليل الأخبار القديمة دفعة واحدة 🆕\n"
+        "`ملخص_يوم` — تقرير AI يومي شامل ⭐\n"
+        "_💡 الأخبار الجديدة تتحلل تلقائياً_\n\n"
         "━━━━━━━━━━━━━━━━\n"
         "📰 *الأخبار + التقويم:*\n"
         "`أخبار` — آخر 24h | `أخبار BTC` | `عاجل`\n"
@@ -2264,8 +2266,72 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── تحليل AI لخبر معين (الجديد) ──
-    # استخدام: حلل_خبر <رقم الخبر> أو حلل_خبر BTC (آخر خبر)
+    # ── حلل_الكل: backfill AI للأخبار الموجودة (الجديد) ──
+    if text in ("حلل_الكل", "حلل الكل", "backfill_ai", "تحليل_شامل"):
+        if not ai_mod.has_any_ai():
+            await u.message.reply_text(
+                "❌ AI غير مفعّل\n\n"
+                "أضف على الأقل واحد من:\n"
+                "• CLAUDE_API_KEY\n"
+                "• GEMINI_API_KEY (مجاني)\n"
+                "• OPENAI_API_KEY"
+            )
+            return
+
+        # نجلب الأخبار اللي ما اتحللتش بـAI
+        pending = db.get_news_without_ai(hours=48, limit=15)
+        if not pending:
+            await u.message.reply_text(
+                "✅ كل الأخبار اتحللت بالفعل\n"
+                "_الأخبار الجديدة تتحلل تلقائياً عند وصولها_")
+            return
+
+        wait = await u.message.reply_text(
+            f"🧠 جاري تحليل {len(pending)} خبر... (~{len(pending)*5} ثانية)")
+
+        analyzed = 0
+        failed = 0
+        for n in pending:
+            try:
+                coins_list = (n.get("coins") or "").split(",") if n.get("coins") else []
+                coins_list = [c.strip() for c in coins_list if c.strip()]
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: ai_mod.analyze_news_item(
+                        n["title"], n.get("summary", ""),
+                        n.get("source", ""), coins_list,
+                        prefer="claude"
+                    )
+                )
+                if result.get("ok"):
+                    a = result["analysis"]
+                    db.update_news_ai(
+                        news_id=n["id"],
+                        ai_summary=a.get("summary_ar", "")[:500],
+                        ai_action=a.get("action_ar", "")[:500],
+                        ai_levels=a.get("key_levels_ar", "")[:300],
+                        ai_horizon=a.get("horizon", "hours"),
+                        ai_sentiment=a.get("direction"),
+                        ai_impact=a.get("impact_score"),
+                    )
+                    analyzed += 1
+                else:
+                    failed += 1
+            except Exception:
+                failed += 1
+            # لا نُغرق الـAPI
+            await asyncio.sleep(1)
+
+        await wait.edit_text(
+            f"✅ *تم تحليل الأخبار*\n\n"
+            f"✓ نجح: {analyzed}\n"
+            f"✗ فشل: {failed}\n\n"
+            f"الآن جرب `أخبار` لتشوف التحليلات",
+            parse_mode="Markdown")
+        return
+
+    # ── تحليل AI لخبر معين ──
     if text_lower.startswith("حلل_خبر") or text_lower.startswith("حلل خبر"):
         if not ai_mod.has_any_ai():
             await u.message.reply_text(
