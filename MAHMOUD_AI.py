@@ -535,3 +535,217 @@ def fmt_consensus(symbol: str, cons: Dict) -> str:
     msg += f"_AIs المستخدمة: {', '.join(cons.get('ais_used', []))}_\n"
     msg += "⚠️ _تحليل تعليمي — مش نصيحة مالية_"
     return msg
+
+
+# ═════════════════════════════════════════════
+# News Analysis (v4.3)
+# ═════════════════════════════════════════════
+
+NEWS_ANALYSIS_PROMPT = """أنت محلل كريبتو محترف. تحلل خبر واحد وترد بـJSON فقط:
+{
+  "summary_ar": "ملخص الخبر بالعربية في جملتين",
+  "impact_score": 0-10,
+  "affected_coins": ["BTC", "ETH"],
+  "direction": "bullish|bearish|neutral",
+  "horizon": "minutes|hours|days|weeks",
+  "action_ar": "ماذا يفعل المتداول الآن (3-4 أسطر تعليمات عملية)",
+  "key_levels_ar": "مستويات مهمة لـBTC/المتأثر",
+  "what_to_watch": "ماذا تراقب الـ24 ساعة القادمة"
+}
+كن دقيقاً وعملياً. لا تنصح بالشراء/البيع المباشر، بل اشرح السيناريوهات."""
+
+
+DAILY_BRIEF_PROMPT = """أنت محلل كريبتو محترف. حلل أهم أخبار اليوم وارد بـJSON:
+{
+  "market_mood": "risk-on|risk-off|mixed",
+  "top_themes": ["موضوع 1", "موضوع 2", "موضوع 3"],
+  "btc_outlook_ar": "نظرة BTC للـ24 ساعة القادمة (3 أسطر)",
+  "alts_outlook_ar": "نظرة الألتس",
+  "key_catalysts_ar": ["catalyst 1", "catalyst 2"],
+  "action_plan_ar": "خطة عمل عملية للمتداول (5 نقاط مرقمة)",
+  "risks_ar": "المخاطر اللي تنتبه لها"
+}"""
+
+
+def analyze_news_item(title: str, summary: str = "",
+                      source: str = "", coins: List[str] = None,
+                      prefer: str = "claude") -> Dict:
+    """
+    يحلل خبر واحد ويرجع تحليل + توصية عملية.
+    prefer: 'claude' أسرع، 'consensus' أدق.
+    """
+    coins_str = ", ".join(coins) if coins else "غير محدد"
+    prompt = (
+        f"خبر:\nالعنوان: {title}\n"
+        f"الملخص: {summary[:500]}\n"
+        f"المصدر: {source}\n"
+        f"العملات المتأثرة: {coins_str}\n\n"
+        f"حلل الخبر."
+    )
+
+    if prefer == "consensus":
+        results = call_all_ais(prompt, system=NEWS_ANALYSIS_PROMPT, max_tokens=800)
+        valid = [(n, r) for n, r in results.items() if r.get("ok") and r.get("text")]
+        if not valid:
+            return {"ok": False, "error": "all_failed"}
+        # نأخذ من Claude أفضل، أو الأطول
+        primary_name = "claude" if any(n == "claude" for n, _ in valid) else valid[0][0]
+        primary = next(r for n, r in valid if n == primary_name)
+        text = primary["text"]
+    else:
+        if prefer == "claude":
+            r = call_claude(prompt, system=NEWS_ANALYSIS_PROMPT, max_tokens=800)
+        elif prefer == "gemini":
+            r = call_gemini(prompt, system=NEWS_ANALYSIS_PROMPT, max_tokens=800)
+        else:
+            r = call_openai(prompt, system=NEWS_ANALYSIS_PROMPT, max_tokens=800)
+        if not r.get("ok"):
+            return {"ok": False, "error": r.get("error", "unknown")}
+        text = r["text"]
+
+    parsed = extract_json(text) or {}
+    if not parsed:
+        return {"ok": False, "error": "json_parse_failed", "raw": text}
+
+    return {"ok": True, "analysis": parsed, "ai_used": prefer}
+
+
+def fmt_news_analysis(title: str, analysis: Dict, url: str = "") -> str:
+    """تنسيق تحليل الخبر للعرض في تيليجرام"""
+    a = analysis
+    direction = a.get("direction", "neutral")
+    dir_emoji = {"bullish": "🟢", "bearish": "🔴",
+                 "neutral": "⚪"}.get(direction, "⚪")
+    dir_ar = {"bullish": "صاعد", "bearish": "هابط",
+              "neutral": "محايد"}.get(direction, "محايد")
+
+    horizon = a.get("horizon", "hours")
+    horizon_ar = {"minutes": "دقائق", "hours": "ساعات",
+                  "days": "أيام", "weeks": "أسابيع"}.get(horizon, "ساعات")
+
+    impact = a.get("impact_score", 5)
+    impact_emoji = "🔥" if impact >= 8 else ("⚡" if impact >= 6 else "📊")
+
+    coins = a.get("affected_coins", [])
+    coins_str = " ".join([f"#{c}" for c in coins[:5]]) if coins else ""
+
+    # Markdown escape للعنوان
+    safe_title = title
+    for ch in ("_", "*", "[", "]", "`"):
+        safe_title = safe_title.replace(ch, "\\" + ch)
+
+    msg = f"🤖 *تحليل AI للخبر*\n\n"
+    msg += f"📰 *{safe_title}*\n\n"
+    msg += f"📝 *الملخص:* {a.get('summary_ar', '—')}\n\n"
+    msg += f"{impact_emoji} *التأثير:* {impact}/10  {dir_emoji} *الاتجاه:* {dir_ar}\n"
+    msg += f"⏱ *المدى:* {horizon_ar}\n"
+    if coins_str:
+        msg += f"💰 *العملات:* {coins_str}\n"
+    msg += "\n"
+
+    msg += f"━━━━━━━━━━━━━━━━\n"
+    msg += f"💡 *ماذا تفعل الآن:*\n"
+    msg += f"{a.get('action_ar', '—')}\n\n"
+
+    if a.get("key_levels_ar"):
+        msg += f"📊 *مستويات مهمة:*\n{a['key_levels_ar']}\n\n"
+
+    if a.get("what_to_watch"):
+        msg += f"👁 *راقب:*\n{a['what_to_watch']}\n\n"
+
+    if url:
+        safe_url = url.replace(")", "%29")
+        msg += f"[المصدر الكامل]({safe_url})"
+
+    return msg
+
+
+def daily_brief(news_items: List[Dict], catalysts: List[Dict] = None,
+                prefer: str = "claude") -> Dict:
+    """
+    يولد تقرير يومي شامل من قائمة أخبار + catalysts.
+    """
+    if not news_items:
+        return {"ok": False, "error": "no_news"}
+
+    # نبني prompt مع أهم 15 خبر
+    news_text = "أهم أخبار اليوم:\n\n"
+    for i, n in enumerate(news_items[:15], 1):
+        news_text += f"{i}. [{n.get('impact', '?')}/10] {n.get('title', '')}\n"
+        if n.get('coins'):
+            news_text += f"   عملات: {n['coins']}\n"
+
+    if catalysts:
+        news_text += "\n\nأحداث ماكرو قادمة:\n"
+        for c in catalysts[:5]:
+            news_text += f"• {c.get('event', c.get('title', ''))}\n"
+
+    if prefer == "consensus":
+        results = call_all_ais(news_text, system=DAILY_BRIEF_PROMPT, max_tokens=1200)
+        valid = [(n, r) for n, r in results.items() if r.get("ok") and r.get("text")]
+        if not valid:
+            return {"ok": False, "error": "all_failed"}
+        primary_name = "claude" if any(n == "claude" for n, _ in valid) else valid[0][0]
+        text = next(r["text"] for n, r in valid if n == primary_name)
+    else:
+        if prefer == "claude":
+            r = call_claude(news_text, system=DAILY_BRIEF_PROMPT, max_tokens=1200)
+        elif prefer == "gemini":
+            r = call_gemini(news_text, system=DAILY_BRIEF_PROMPT, max_tokens=1200)
+        else:
+            r = call_openai(news_text, system=DAILY_BRIEF_PROMPT, max_tokens=1200)
+        if not r.get("ok"):
+            return {"ok": False, "error": r.get("error", "unknown")}
+        text = r["text"]
+
+    parsed = extract_json(text) or {}
+    if not parsed:
+        return {"ok": False, "error": "json_parse_failed", "raw": text}
+
+    return {"ok": True, "brief": parsed, "news_count": len(news_items)}
+
+
+def fmt_daily_brief(brief_data: Dict) -> str:
+    """تنسيق التقرير اليومي للعرض"""
+    if not brief_data.get("ok"):
+        return f"❌ فشل توليد التقرير: {brief_data.get('error', 'unknown')}"
+
+    b = brief_data["brief"]
+    n_count = brief_data.get("news_count", 0)
+
+    mood = b.get("market_mood", "mixed")
+    mood_emoji = {"risk-on": "🟢", "risk-off": "🔴",
+                  "mixed": "🟡"}.get(mood, "🟡")
+    mood_ar = {"risk-on": "Risk-On (شهية مخاطرة)",
+               "risk-off": "Risk-Off (هروب للأمان)",
+               "mixed": "مختلط"}.get(mood, "مختلط")
+
+    msg = f"📊 *التقرير اليومي AI*\n"
+    msg += f"_(تحليل {n_count} خبر)_\n\n"
+    msg += f"{mood_emoji} *مزاج السوق:* {mood_ar}\n\n"
+
+    themes = b.get("top_themes", [])
+    if themes:
+        msg += f"🎯 *أهم المواضيع:*\n"
+        for t in themes[:3]:
+            msg += f"  • {t}\n"
+        msg += "\n"
+
+    msg += f"━━━━━━━━━━━━━━━━\n"
+    msg += f"₿ *BTC outlook:*\n{b.get('btc_outlook_ar', '—')}\n\n"
+    msg += f"🪙 *Alts outlook:*\n{b.get('alts_outlook_ar', '—')}\n\n"
+
+    cats = b.get("key_catalysts_ar", [])
+    if cats:
+        msg += f"🔥 *Catalysts اليوم:*\n"
+        for ca in cats[:3]:
+            msg += f"  • {ca}\n"
+        msg += "\n"
+
+    msg += f"━━━━━━━━━━━━━━━━\n"
+    msg += f"📋 *خطة العمل:*\n{b.get('action_plan_ar', '—')}\n\n"
+
+    if b.get("risks_ar"):
+        msg += f"⚠️ *المخاطر:*\n{b['risks_ar']}"
+
+    return msg

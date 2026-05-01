@@ -1477,6 +1477,81 @@ async def auto_scanner_v4_job(ctx):
                  f"found {len(found)}, sent {sent_count}")
 
 
+# ╔═══════════════════════════════════════════╗
+# ║  v4 SCALP SCANNER (1m/5m, all coins)      ║
+# ╚═══════════════════════════════════════════╝
+
+async def scalp_scanner_job(ctx):
+    """
+    سكالب سكانر — يفحص كل العملات على 1m/5m كل 5 دقائق.
+    يبعت إشارات السكالب القوية (bull/bear ≥6).
+    """
+    cid = ctx.job.data["chat_id"]
+    min_strength = ctx.job.data.get("min_strength", 6)  # 6+ = قوي
+    max_per_cycle = ctx.job.data.get("max_per_cycle", 3)
+    cooldown_min = 30  # نصف ساعة لكل عملة (السكالب سريع)
+
+    syms = get_futures_syms()  # السكالب فقط على فيوتشر (نحتاج 1m حقيقي)
+    if not syms:
+        return
+
+    found = []
+    now = datetime.now()
+
+    for sym in syms:
+        # cooldown مخصص للسكالب (30 دقيقة)
+        last = db.last_scanner_alert(cid, f"SCALP_{sym}")
+        if last and (now - last).total_seconds() < cooldown_min * 60:
+            continue
+
+        try:
+            loop = asyncio.get_event_loop()
+            R = await asyncio.wait_for(
+                loop.run_in_executor(None, analyze_scalp, sym),
+                timeout=20
+            )
+            if not R or R.get("err"):
+                continue
+
+            action = R.get("action", "WAIT")
+            if action not in ("LONG", "SHORT"):
+                continue
+
+            strength = max(R.get("bull", 0), R.get("bear", 0))
+            if strength < min_strength:
+                continue
+
+            found.append((strength, sym, action, R))
+
+        except asyncio.TimeoutError:
+            continue
+        except Exception as e:
+            logging.warning(f"Scalp scanner {sym}: {str(e)[:60]}")
+            continue
+
+    found.sort(key=lambda x: x[0], reverse=True)
+
+    sent = 0
+    for strength, sym, action, R in found[:max_per_cycle]:
+        try:
+            header = f"⚡ *مسح السكالب* — قوة {strength} نقاط\n━━━━━━━━━━━━━━━━\n\n"
+            await ctx.bot.send_message(
+                cid, header + build_scalp(R),
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔄 تحديث", callback_data=f"s:{sym}"),
+                    InlineKeyboardButton("📊 تحليل كامل", callback_data=f"r:{sym}"),
+                ]])
+            )
+            db.record_scanner_alert(cid, f"SCALP_{sym}", action, float(strength))
+            sent += 1
+        except Exception as e:
+            logging.warning(f"Scalp send error: {e}")
+
+    logging.info(f"Scalp scanner [{cid}]: scanned {len(syms)}, "
+                 f"found {len(found)}, sent {sent}")
+
+
 def build_entry(R, alert=False):
     if R.get("err"):
         return R["err"]
@@ -1807,12 +1882,16 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
         "📈 *تحليل فوري:*\n"
         "أرسل: `BTC` / `ETH` / `SOL` / أي عملة\n"
         "`تابع BTC` — تنبيه عند الإشارات القوية ≥12/15\n\n"
-        "🧠 *AI Multi-Brain (الجديد!):*\n"
+        "🧠 *AI Multi-Brain:*\n"
         "`اجماع BTC` — تحليل بـ3 AIs + إجماع\n"
-        "`سؤال [نصك]` — اسأل أي شيء\n\n"
+        "`سؤال [نصك]` — اسأل أي شيء\n"
+        "`حلل_خبر BTC` — AI يحلل آخر خبر BTC ⭐\n"
+        "`حلل_خبر 1` — AI يحلل خبر بالرقم\n"
+        "`ملخص_يوم` — تقرير AI يومي شامل ⭐\n\n"
         "━━━━━━━━━━━━━━━━\n"
-        "📰 *الأخبار + التقويم (الجديد):*\n"
+        "📰 *الأخبار + التقويم:*\n"
         "`أخبار` — آخر 24h | `أخبار BTC` | `عاجل`\n"
+        "_الأخبار العاجلة (8+) تجي مع تحليل AI تلقائي 🤖_\n"
         "`تقويم` — أحداث اليوم Macro\n"
         "`تقويم_اسبوع` — كل الأسبوع\n"
         "`ماكرو` — CPI/Yields/توقعات (Massive.com)\n"
@@ -1840,7 +1919,10 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
         "📈 *Long-term:*\n"
         "`طويل BTC` — تحليل D1/W1 للـHodlers\n\n"
         "━━━━━━━━━━━━━━━━\n"
-        "⚡ *Scalping:* `سكالب BTC` | `تابع سكالب BTC`\n\n"
+        "⚡ *Scalping:*\n"
+        "`سكالب BTC` — تحليل فوري | `تابع سكالب BTC`\n"
+        "`ماسح_سكالب` — مسح كل العملات كل 5 دقائق ⭐\n"
+        "`وقف_مسح_سكالب` للإيقاف\n\n"
         "🔍 *الماسح الذكي v4 (~580 عملة Spot+Futures):*\n"
         "`ماسح` — تفعيل (12/15 = 80% قوة)\n"
         "`ماسح 13` — أقوى | `ماسح 9` — أكثر إشارات\n"
@@ -2130,6 +2212,126 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
             disable_web_page_preview=True,
         )
+        return
+
+    # ── تحليل AI لخبر معين (الجديد) ──
+    # استخدام: حلل_خبر <رقم الخبر> أو حلل_خبر BTC (آخر خبر)
+    if text_lower.startswith("حلل_خبر") or text_lower.startswith("حلل خبر"):
+        if not ai_mod.has_any_ai():
+            await u.message.reply_text(
+                "❌ AI غير مفعّل\n\n"
+                "أضف على الأقل واحد من:\n"
+                "• CLAUDE_API_KEY\n"
+                "• GEMINI_API_KEY (مجاني)\n"
+                "• OPENAI_API_KEY"
+            )
+            return
+
+        parts = text.split()
+        coin_or_idx = parts[1].upper() if len(parts) > 1 else None
+
+        # نختار الخبر
+        item = None
+        if coin_or_idx:
+            try:
+                idx = int(coin_or_idx)
+                items = db.get_recent_news(hours=24, min_impact=5, limit=20)
+                if 1 <= idx <= len(items):
+                    item = items[idx - 1]
+            except ValueError:
+                items = db.get_recent_news(hours=48, coin=coin_or_idx,
+                                           min_impact=0, limit=1)
+                if items:
+                    item = items[0]
+        else:
+            items = db.get_recent_news(hours=24, min_impact=7, limit=1)
+            if items:
+                item = items[0]
+
+        if not item:
+            await u.message.reply_text(
+                "⚠️ ما لقيت خبر — جرب:\n"
+                "`أخبار` لرؤية القائمة\n"
+                "`حلل_خبر BTC` لتحليل آخر خبر BTC\n"
+                "`حلل_خبر 1` لتحليل خبر رقم 1",
+                parse_mode="Markdown")
+            return
+
+        wait = await u.message.reply_text(
+            "🧠 AI يحلل الخبر... (10-20 ثانية)")
+
+        try:
+            coins_list = (item.get("coins") or "").split(",") if item.get("coins") else []
+            coins_list = [c.strip() for c in coins_list if c.strip()]
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: ai_mod.analyze_news_item(
+                    item["title"], item.get("summary", ""),
+                    item.get("source", ""), coins_list,
+                    prefer="claude"
+                )
+            )
+
+            await wait.delete()
+
+            if not result.get("ok"):
+                await u.message.reply_text(
+                    f"❌ فشل التحليل: {result.get('error', 'unknown')}")
+                return
+
+            msg = ai_mod.fmt_news_analysis(
+                item["title"], result["analysis"], item.get("url", ""))
+            await u.message.reply_text(
+                msg, parse_mode="Markdown", disable_web_page_preview=True)
+        except Exception as e:
+            await wait.edit_text(f"❌ خطأ: {str(e)[:100]}")
+        return
+
+    # ── تقرير AI يومي شامل (الجديد) ──
+    if text in ("ملخص_يوم", "ملخص اليوم", "تقرير_AI", "daily_brief", "AI brief"):
+        if not ai_mod.has_any_ai():
+            await u.message.reply_text(
+                "❌ AI غير مفعّل — أضف API key أحد الـ3 ذكاءات")
+            return
+
+        wait = await u.message.reply_text(
+            "🧠 AI يولد التقرير اليومي... (15-30 ثانية)")
+
+        try:
+            # نجلب أهم 20 خبر اليوم
+            news_items = db.get_recent_news(hours=24, min_impact=5, limit=20)
+            if not news_items:
+                await wait.edit_text(
+                    "⚠️ لا توجد أخبار كافية للتقرير\n"
+                    "_تحتاج RSS feeds شغّالة_")
+                return
+
+            # نجيب catalysts ماكرو
+            catalysts = []
+            try:
+                catalysts = cal_mod.get_top_catalysts(5)
+            except Exception:
+                pass
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: ai_mod.daily_brief(news_items, catalysts, prefer="claude")
+            )
+
+            await wait.delete()
+
+            if not result.get("ok"):
+                await u.message.reply_text(
+                    f"❌ فشل التقرير: {result.get('error', 'unknown')}")
+                return
+
+            msg = ai_mod.fmt_daily_brief(result)
+            await u.message.reply_text(msg, parse_mode="Markdown")
+        except Exception as e:
+            await wait.edit_text(f"❌ خطأ: {str(e)[:100]}")
         return
 
     # ── اشتراك في تنبيهات الأخبار ──
@@ -2645,6 +2847,46 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
             jn=f"ss_{chat_id}_{sym2}"
             for j in c.job_queue.get_jobs_by_name(jn): j.schedule_removal()
             await u.message.reply_text(f"⛔ وقف Scalp {sym2}"); return
+
+    # ══ مسح السكالب لكل العملات (الجديد) ══
+    if text in ("ماسح_سكالب", "ماسح سكالب", "scalp_scan", "scalp scan"):
+        jn = f"sc_scalp_{chat_id}"
+        for j in c.job_queue.get_jobs_by_name(jn):
+            j.schedule_removal()
+        c.job_queue.run_repeating(
+            scalp_scanner_job,
+            interval=300,  # كل 5 دقائق
+            first=15,
+            data={"chat_id": chat_id, "min_strength": 6, "max_per_cycle": 3},
+            name=jn,
+        )
+        fut_n = len(get_futures_syms())
+        await u.message.reply_text(
+            f"⚡ *مسح السكالب مفعّل*\n\n"
+            f"📊 يفحص {fut_n} عملة فيوتشر كل 5 دقائق\n"
+            f"🎯 يبعت أقوى 3 إشارات بقوة ≥6 نقاط\n"
+            f"⏱ Cooldown: 30 دقيقة لكل عملة\n\n"
+            f"📐 *المؤشرات (1m/5m):*\n"
+            f"• RSI(7) — ذروة شراء/بيع\n"
+            f"• EMA Cross 5/13\n"
+            f"• Bollinger Bands\n"
+            f"• Volume spikes\n"
+            f"• CVD\n"
+            f"• ATR\n\n"
+            f"`وقف_مسح_سكالب` للإيقاف",
+            parse_mode="Markdown")
+        return
+
+    if text in ("وقف_مسح_سكالب", "وقف مسح سكالب", "stop scalp scan"):
+        jn = f"sc_scalp_{chat_id}"
+        removed = 0
+        for j in c.job_queue.get_jobs_by_name(jn):
+            j.schedule_removal()
+            removed += 1
+        await u.message.reply_text(
+            "⛔ تم إيقاف مسح السكالب" if removed else
+            "⚠️ مسح السكالب غير مفعّل")
+        return
 
         # ── تحليل فوري ──
     if not text or len(text) > 15:

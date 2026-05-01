@@ -407,7 +407,7 @@ def get_breaking_msg(items: List[Dict]) -> str:
 async def news_check_job(ctx):
     """
     يشتغل كل 15 دقيقة.
-    يجلب الأخبار، يخزنها، ويبعت العاجل للمشتركين.
+    يجلب الأخبار، يخزنها، ويبعت العاجل + تحليل AI للمشتركين.
     """
     try:
         count, breaking = process_and_store_news()
@@ -416,6 +416,15 @@ async def news_check_job(ctx):
 
         if not breaking:
             return
+
+        # نحاول استدعاء AI Module (اختياري)
+        ai_module = None
+        try:
+            import MAHMOUD_AI as ai_module
+            if not ai_module.has_any_ai():
+                ai_module = None
+        except Exception:
+            ai_module = None
 
         # نبعت العاجل (impact >= 7)
         for item in breaking:
@@ -433,12 +442,41 @@ async def news_check_job(ctx):
                 if item["impact"] < sub.get("min_impact", 7):
                     continue
                 try:
+                    # ① نبعت الخبر الأصلي
                     await ctx.bot.send_message(
                         chat_id=sub["chat_id"],
                         text=get_breaking_msg([item]),
                         parse_mode="Markdown",
                         disable_web_page_preview=False,
                     )
+
+                    # ② نبعت تحليل AI تلقائياً (لو AI مفعّل وللأخبار 8+)
+                    if ai_module and item["impact"] >= 8:
+                        try:
+                            coins_list = item.get("coins", [])
+                            if isinstance(coins_list, str):
+                                coins_list = [c.strip() for c in coins_list.split(",") if c.strip()]
+                            ai_result = ai_module.analyze_news_item(
+                                item["title"],
+                                item.get("summary", ""),
+                                item.get("source", ""),
+                                coins_list,
+                                prefer="claude",
+                            )
+                            if ai_result.get("ok"):
+                                ai_msg = ai_module.fmt_news_analysis(
+                                    item["title"],
+                                    ai_result["analysis"],
+                                    item.get("url", ""),
+                                )
+                                await ctx.bot.send_message(
+                                    chat_id=sub["chat_id"],
+                                    text=ai_msg,
+                                    parse_mode="Markdown",
+                                    disable_web_page_preview=True,
+                                )
+                        except Exception as e:
+                            logging.warning(f"News AI analysis failed: {e}")
                 except Exception:
                     pass
     except Exception as e:
