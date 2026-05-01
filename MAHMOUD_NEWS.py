@@ -402,7 +402,7 @@ def _esc_md(s: str) -> str:
 
 
 def fmt_news_item(item: Dict, idx: Optional[int] = None) -> str:
-    """تنسيق خبر واحد للعرض — مع تحليل AI inline لو متاح"""
+    """تنسيق خبر واحد للعرض — نظيف بدون AI (WALL STREET PRO style)"""
     impact = item.get("impact", 0)
     sentiment = item.get("sentiment", "neutral")
     coins = item.get("coins") or ""
@@ -413,33 +413,19 @@ def fmt_news_item(item: Dict, idx: Optional[int] = None) -> str:
                "neutral": "⚪"}.get(sentiment, "⚪")
     impact_emoji = "🔥" if impact >= 9 else ("⚡" if impact >= 7 else "📰")
 
-    prefix = f"{idx}. " if idx else ""
-    title = _esc_md(item.get("title", "").strip())
+    prefix = f"*{idx}.* " if idx else ""
+    title = _esc_md(item.get("title", "").strip()[:100])
     source = _esc_md(item.get("source", ""))
     url = item.get("url", "")
-    coins_tag = "  ".join([f"#{_esc_md(c)}" for c in coins[:5]]) if coins else ""
+    coins_tag = "  ".join([f"#{_esc_md(c)}" for c in coins[:3]]) if coins else ""
 
-    msg = f"{prefix}{impact_emoji} {s_emoji} *{title}*\n"
+    msg = f"{prefix}{impact_emoji} {s_emoji} {title}\n"
     if coins_tag:
         msg += f"   {coins_tag}\n"
-    msg += f"   _{source} • تأثير {impact}/10_\n"
-
-    # ✨ NEW: AI analysis inline (Wall Street Pro style)
-    ai_summary = item.get("ai_summary")
-    ai_action = item.get("ai_action")
-    if ai_summary:
-        # Esc the AI text too
-        safe_summary = _esc_md(ai_summary)
-        msg += f"   🤖 *تحليل:* {safe_summary}\n"
-    if ai_action:
-        safe_action = _esc_md(ai_action)
-        # ناخذ أول جملة بس عشان ما يطول
-        first_line = safe_action.split("\n")[0][:200]
-        msg += f"   💡 *اعمل:* {first_line}\n"
-
+    msg += f"   📡 _{source}_ • تأثير {impact}/10\n"
     if url:
         safe_url = url.replace(")", "%29")
-        msg += f"   [اقرأ المزيد]({safe_url})\n"
+        msg += f"   [مقال كامل]({safe_url})\n"
     return msg
 
 
@@ -479,8 +465,8 @@ def get_breaking_msg(items: List[Dict]) -> str:
 
 async def news_check_job(ctx):
     """
-    يشتغل كل 15 دقيقة. سريع — فقط fetch + store.
-    AI تحليل في job منفصل (ai_analysis_job) لتجنب blocking.
+    يشتغل كل 15 دقيقة (WALL STREET PRO pattern).
+    سريع — fetch + store. Breaking news يبعت مع AI سريع inline.
     """
     try:
         # ① جلب وتخزين سريع (بدون AI)
@@ -491,7 +477,19 @@ async def news_check_job(ctx):
         if count > 0:
             logging.info(f"News: +{count} new items, {len(breaking)} breaking")
 
-        # ② إرسال الـbreaking بدون AI أولاً (سريع)
+        if not breaking:
+            return
+
+        # AI module (اختياري)
+        ai_module = None
+        try:
+            import MAHMOUD_AI as ai_module
+            if not ai_module.has_any_ai():
+                ai_module = None
+        except Exception:
+            ai_module = None
+
+        # ② إرسال الـbreaking مع AI inline (WALL STREET pattern)
         for item in breaking:
             min_impact = item["impact"]
             subscribers = db.get_breaking_subscribers(min_impact)
@@ -504,35 +502,119 @@ async def news_check_job(ctx):
                         continue
                 if item["impact"] < sub.get("min_impact", 7):
                     continue
+
+                # تحضير الرسالة (WALL STREET style)
+                title_esc = _esc_md(item.get("title", "")[:200])
+                source_esc = _esc_md(item.get("source", "?"))
+                coins_str = ", ".join(item.get("coins", [])[:5]) if item.get("coins") else ""
+
+                msg = f"🚨 *خبر عاجل — {source_esc}*\n"
+                msg += "━━━━━━━━━━━━━━━━━━━\n\n"
+                msg += f"📰 *{title_esc}*\n\n"
+                if coins_str:
+                    msg += f"🎯 الأصول المتأثرة: `{coins_str}`\n\n"
+
+                # ③ AI تحليل سريع inline (Claude فقط - أسرع)
+                if ai_module and item["impact"] >= 7:
+                    msg += "━━━━━━━━━━━━━━━━━━━\n"
+                    msg += "🧠 *تحليل AI سريع:*\n\n"
+                    try:
+                        loop2 = asyncio.get_event_loop()
+                        ai_text = await asyncio.wait_for(
+                            loop2.run_in_executor(
+                                None,
+                                lambda it=item: _quick_ai_analyze(ai_module, it)
+                            ),
+                            timeout=20
+                        )
+                        if ai_text:
+                            if len(ai_text) > 1500:
+                                ai_text = ai_text[:1500] + "..."
+                            msg += ai_text
+                        else:
+                            msg += "_التحليل غير متاح حالياً_"
+                    except asyncio.TimeoutError:
+                        msg += "_التحليل تأخر — الخبر بدون تحليل_"
+                    except Exception as e:
+                        logging.warning(f"AI quick analysis: {e}")
+                        msg += "_التحليل تأخر_"
+
+                msg += "\n\n━━━━━━━━━━━━━━━━━━━\n"
+                if item.get("url"):
+                    safe_url = item["url"].replace(")", "%29")
+                    msg += f"🔗 [اقرأ الخبر الكامل]({safe_url})\n\n"
+                msg += "_⚠️ تحليل تعليمي — ليس نصيحة استثمارية_"
+
+                # نقسم لو طويل
                 try:
+                    if len(msg) > 4000:
+                        msg = msg[:4000] + "..."
                     await ctx.bot.send_message(
                         chat_id=sub["chat_id"],
-                        text=get_breaking_msg([item]),
+                        text=msg,
                         parse_mode="Markdown",
-                        disable_web_page_preview=False,
+                        disable_web_page_preview=True,
                     )
-                except Exception:
-                    pass
-
-        # ③ AI analysis للـpending (background — لا يحجب)
-        # نحلل بحد أقصى 3 أخبار/دورة لتجنب الإرهاق
-        try:
-            analyzed = await ai_analyze_pending_news(max_items=3, min_impact=6)
-            if analyzed > 0:
-                logging.info(f"AI analyzed {analyzed} pending news items")
-        except Exception as e:
-            logging.warning(f"AI background analysis failed: {e}")
+                except Exception as e:
+                    logging.warning(f"Failed to send breaking news: {e}")
     except Exception as e:
         logging.error(f"news_check_job error: {e}")
 
 
+def _quick_ai_analyze(ai_module, news_item: Dict) -> str:
+    """
+    تحليل AI سريع لخبر عاجل (10-15 ثانية) — Claude فقط.
+    نسخة WALL STREET PRO من quick_ai_news_analysis.
+    Returns: نص حر (ليس JSON).
+    """
+    title = news_item.get("title", "")
+    source = news_item.get("source", "")
+    summary = news_item.get("summary", "")[:500]
+    coins = news_item.get("coins", [])
+    coins_str = ", ".join(coins[:5]) if coins else "Crypto Market"
+
+    prompt = f"""خبر عاجل من {source}:
+
+"{title}"
+
+{summary if summary else ''}
+
+العملات المتأثرة: {coins_str}
+
+مهمتك: تحليل سريع (تحت 200 كلمة) كمحلل صناديق تحوّط كريبتو:
+
+1️⃣ **التأثير المتوقع** (Bullish/Bearish/Neutral) على كل عملة
+2️⃣ **القوة** (قوي/متوسط/ضعيف)
+3️⃣ **التوقيت** (فوري / تدريجي / مؤجل)
+4️⃣ **توصية فورية:**
+   • LONG/SHORT/HOLD/تجنّب الدخول
+   • مستويات حرجة للمراقبة
+   • أسباب موجزة (3 أسباب فقط)
+
+⚡ كن مباشر ومحدد - ليس تنظير عام."""
+
+    try:
+        # نستدعي Claude مباشرة (الأسرع)
+        r = ai_module.call_claude(prompt, max_tokens=600)
+        if r.get("ok"):
+            return r["text"]
+        # Fallback: Gemini
+        r = ai_module.call_gemini(prompt, max_tokens=600)
+        if r.get("ok"):
+            return r["text"]
+        # Fallback: OpenAI
+        r = ai_module.call_openai(prompt, max_tokens=600)
+        if r.get("ok"):
+            return r["text"]
+        return ""
+    except Exception as e:
+        logging.warning(f"_quick_ai_analyze: {e}")
+        return ""
+
+
+# الوظيفة القديمة لم تعد مستخدمة، لكن نتركها كـno-op تجنباً لكسر main.py
 async def ai_analysis_job(ctx):
     """
-    Job منفصل كل 5 دقائق — يحلل أي خبر بدون AI.
+    Deprecated في v4.5 — الـAI يطبق inline في news_check_job.
     """
-    try:
-        analyzed = await ai_analyze_pending_news(max_items=3, min_impact=5)
-        if analyzed > 0:
-            logging.info(f"[ai_job] analyzed {analyzed} news items")
-    except Exception as e:
-        logging.warning(f"ai_analysis_job error: {e}")
+    pass
