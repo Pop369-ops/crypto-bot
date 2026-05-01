@@ -500,20 +500,23 @@ MIN_WEAK_SIGNAL = 9.0      # ≥9/15 = إشارة متوسطة (تحذير)
 
 
 def make_decision(score: Dict, btc_bias_4h: str = "NEUTRAL",
-                  symbol: str = "") -> Dict:
+                  symbol: str = "",
+                  min_strong: float = MIN_STRONG_SIGNAL,
+                  min_weak: float = MIN_WEAK_SIGNAL) -> Dict:
     """
     يحدد القرار النهائي بناءً على score + MTF + BTC filter.
+    min_strong/min_weak قابلة للتخصيص للـSpot vs Futures.
     """
     long_s = score["long_score"]
     short_s = score["short_score"]
     mtf = score.get("mtf", {})
 
-    # شرط الإشارة القوية: 12+ و MTF aligned
+    # شرط الإشارة القوية: ≥min_strong و MTF aligned
     decision = "WAIT"
     confidence = "ضعيف"
     reason = ""
 
-    if long_s >= MIN_STRONG_SIGNAL and mtf.get("aligned_long"):
+    if long_s >= min_strong and mtf.get("aligned_long"):
         ok, warn = btc_filter(symbol, "LONG", btc_bias_4h)
         if ok:
             decision = "LONG"
@@ -523,7 +526,7 @@ def make_decision(score: Dict, btc_bias_4h: str = "NEUTRAL",
             decision = "WAIT"
             confidence = "محظور"
             reason = warn
-    elif short_s >= MIN_STRONG_SIGNAL and mtf.get("aligned_short"):
+    elif short_s >= min_strong and mtf.get("aligned_short"):
         ok, warn = btc_filter(symbol, "SHORT", btc_bias_4h)
         if ok:
             decision = "SHORT"
@@ -533,18 +536,18 @@ def make_decision(score: Dict, btc_bias_4h: str = "NEUTRAL",
             decision = "WAIT"
             confidence = "محظور"
             reason = warn
-    elif long_s >= MIN_WEAK_SIGNAL and not mtf.get("aligned_short"):
+    elif long_s >= min_weak and not mtf.get("aligned_short"):
         decision = "WAIT"
         confidence = "متوسط"
         reason = f"LONG محتمل ({long_s}) لكن MTF غير محاذٍ تماماً"
-    elif short_s >= MIN_WEAK_SIGNAL and not mtf.get("aligned_long"):
+    elif short_s >= min_weak and not mtf.get("aligned_long"):
         decision = "WAIT"
         confidence = "متوسط"
         reason = f"SHORT محتمل ({short_s}) لكن MTF غير محاذٍ تماماً"
     else:
         decision = "WAIT"
         confidence = "ضعيف"
-        reason = f"L:{long_s} | S:{short_s} (الحد {MIN_STRONG_SIGNAL})"
+        reason = f"L:{long_s} | S:{short_s} (الحد {min_strong})"
 
     return {
         "action": decision,

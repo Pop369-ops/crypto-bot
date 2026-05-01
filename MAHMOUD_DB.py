@@ -194,6 +194,31 @@ def init_db():
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_whale_seen ON whale_alerts(seen_at DESC)")
 
+    # ─── Scanner Subscribers (v4.2) ───
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS scanner_subscribers (
+        chat_id         INTEGER PRIMARY KEY,
+        threshold       INTEGER DEFAULT 12,
+        scan_spot       INTEGER DEFAULT 1,
+        cooldown_hours  INTEGER DEFAULT 4,
+        max_per_cycle   INTEGER DEFAULT 5,
+        started_at      TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS scanner_alerts_sent (
+        chat_id         INTEGER,
+        symbol          TEXT,
+        sent_at         TEXT,
+        action          TEXT,
+        score           REAL,
+        PRIMARY KEY (chat_id, symbol)
+    )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_scanner_alerts_sent_at "
+              "ON scanner_alerts_sent(sent_at DESC)")
+
     conn.commit()
     conn.close()
 
@@ -759,3 +784,104 @@ def get_recent_whales(hours: int = 24, symbol: Optional[str] = None,
     rows = [dict(r) for r in c.fetchall()]
     conn.close()
     return rows
+
+
+# ═════════════════════════════════════════════
+# Scanner Subscribers (v4.2)
+# ═════════════════════════════════════════════
+
+def subscribe_scanner(chat_id: int, threshold: int = 12,
+                      scan_spot: bool = True,
+                      cooldown_hours: int = 4,
+                      max_per_cycle: int = 5) -> None:
+    """يسجل أو يحدث اشتراك مستخدم في الماسح"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO scanner_subscribers
+        (chat_id, threshold, scan_spot, cooldown_hours, max_per_cycle)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET
+            threshold = excluded.threshold,
+            scan_spot = excluded.scan_spot,
+            cooldown_hours = excluded.cooldown_hours,
+            max_per_cycle = excluded.max_per_cycle
+    """, (chat_id, threshold, 1 if scan_spot else 0,
+          cooldown_hours, max_per_cycle))
+    conn.commit()
+    conn.close()
+
+
+def unsubscribe_scanner(chat_id: int) -> bool:
+    """يحذف اشتراك المستخدم"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM scanner_subscribers WHERE chat_id = ?", (chat_id,))
+    deleted = c.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def get_scanner_subscribers() -> List[Dict]:
+    """يرجع كل المشتركين"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM scanner_subscribers")
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_scanner_subscriber(chat_id: int) -> Optional[Dict]:
+    """يرجع إعدادات مستخدم واحد"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM scanner_subscribers WHERE chat_id = ?", (chat_id,))
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def record_scanner_alert(chat_id: int, symbol: str,
+                         action: str, score: float) -> None:
+    """يسجل تنبيه أُرسل (للـcooldown)"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT OR REPLACE INTO scanner_alerts_sent
+        (chat_id, symbol, sent_at, action, score)
+        VALUES (?, ?, ?, ?, ?)
+    """, (chat_id, symbol, datetime.utcnow().isoformat(), action, score))
+    conn.commit()
+    conn.close()
+
+
+def last_scanner_alert(chat_id: int, symbol: str) -> Optional[datetime]:
+    """يرجع آخر وقت أُرسل فيه تنبيه لهذه العملة"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT sent_at FROM scanner_alerts_sent
+        WHERE chat_id = ? AND symbol = ?
+    """, (chat_id, symbol))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    try:
+        return datetime.fromisoformat(row["sent_at"])
+    except (ValueError, TypeError):
+        return None
+
+
+def cleanup_old_scanner_alerts(days: int = 7) -> int:
+    """يحذف التنبيهات القديمة"""
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM scanner_alerts_sent WHERE sent_at < ?", (cutoff,))
+    deleted = c.rowcount
+    conn.commit()
+    conn.close()
+    return deleted

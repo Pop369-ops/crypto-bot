@@ -1118,8 +1118,10 @@ async def scalp_monitor_job(ctx):
 # ║  ICT/SMC SCANNER             ║
 # ╚══════════════════════════════╝
 
-_scan_excl={"USDTUSDT","BUSDUSDT","USDCUSDT","FDUSDUSDT","WBTCUSDT","WETHUSDT"}
+_scan_excl={"USDTUSDT","BUSDUSDT","USDCUSDT","FDUSDUSDT","WBTCUSDT","WETHUSDT",
+           "TUSDUSDT","DAIUSDT","USDPUSDT","SUSDUSDT","FRAXUSDT","LUSDUSDT"}
 _fut_cache:list=[]; _fut_ts:float=0
+_spot_cache:list=[]; _spot_ts:float=0
 scan_lists:dict={}; scan_alerted:dict={}; SCAN_COOL=7200
 
 def get_futures_syms():
@@ -1134,6 +1136,50 @@ def get_futures_syms():
                 if syms: _fut_cache=sorted(syms); _fut_ts=_t.time(); return syms
     except: pass
     return _fut_cache or ["BTCUSDT","ETHUSDT","SOLUSDT"]
+
+
+def get_spot_syms():
+    """يجلب كل عملات Binance Spot USDT (للسبوت بس، بدون اللي في الفيوتشر)"""
+    global _spot_cache, _spot_ts
+    import time as _t
+    if _spot_cache and (_t.time()-_spot_ts)<3600: return _spot_cache
+    try:
+        for url in ["https://api.binance.com/api/v3/ticker/24hr",
+                    "https://api1.binance.com/api/v3/ticker/24hr",
+                    "https://api2.binance.com/api/v3/ticker/24hr"]:
+            r = api_get(url, timeout=(12,30))
+            if r and r.status_code == 200:
+                # نأخذ عملات USDT بحجم تداول معقول (>100K USD)
+                syms = []
+                for t in r.json():
+                    sym = t.get("symbol", "")
+                    if not sym.endswith("USDT"): continue
+                    if sym in _scan_excl: continue
+                    try:
+                        vol = float(t.get("quoteVolume", 0))
+                        if vol < 100_000: continue  # نتجاهل العملات الميتة
+                    except (ValueError, TypeError):
+                        continue
+                    syms.append(sym)
+                if syms:
+                    _spot_cache = sorted(syms)
+                    _spot_ts = _t.time()
+                    return _spot_cache
+    except Exception as e:
+        logging.warning(f"get_spot_syms error: {e}")
+    return _spot_cache or []
+
+
+def get_all_scannable_syms(include_spot: bool = True):
+    """يرجع [(sym, is_futures: bool)] — الفيوتشر أولاً، ثم السبوت اللي مش في الفيوتشر"""
+    futures = set(get_futures_syms())
+    result = [(s, True) for s in sorted(futures)]
+    if include_spot:
+        spot = get_spot_syms()
+        # السبوت فقط (مش في الفيوتشر)
+        spot_only = [s for s in spot if s not in futures]
+        result.extend([(s, False) for s in sorted(spot_only)])
+    return result
 
 def ict_score(sym):
     """Order Block + FVG + Smart Money + ICP."""
@@ -1305,6 +1351,131 @@ async def auto_scanner_job(ctx):
                     InlineKeyboardButton("⚡ سكالب",callback_data=f"s:{sym}"),
                 ]]))
         except Exception as e: logging.warning(f"[SCAN_SEND] {e}")
+
+
+# ╔═══════════════════════════════════════════╗
+# ║  v4 SCANNER (Spot + Futures, 80%+)        ║
+# ╚═══════════════════════════════════════════╝
+
+async def auto_scanner_v4_job(ctx):
+    """
+    v4 Scanner — يفحص كل العملات (Spot + Futures) ويرسل إشارات بـ80%+ confidence.
+    يستخدم signals.compute_signal_score الموزون (15 نقطة للفيوتشر، 11 للسبوت).
+    """
+    cid = ctx.job.data["chat_id"]
+
+    # 1) جلب إعدادات المستخدم من DB (إن موجودة)
+    sub = db.get_scanner_subscriber(cid)
+    if not sub:
+        # أُلغي الاشتراك — وقّف الـjob
+        for j in ctx.job_queue.get_jobs_by_name(f"sc_v4_{cid}"):
+            j.schedule_removal()
+        return
+
+    threshold = sub.get("threshold", 12)
+    scan_spot = bool(sub.get("scan_spot", 1))
+    cooldown_h = sub.get("cooldown_hours", 4)
+    max_per_cycle = sub.get("max_per_cycle", 5)
+
+    # حد السبوت = 80% من 11 = 9 (لو threshold=12، لو 13→10، لو 9→7)
+    spot_threshold = max(7, int(round(threshold * 11 / 15)))
+
+    # 2) جلب قائمة العملات
+    all_syms = get_all_scannable_syms(include_spot=scan_spot)
+    if not all_syms:
+        logging.warning(f"Scanner v4 [{cid}]: no symbols available")
+        return
+
+    logging.info(f"Scanner v4 [{cid}]: scanning {len(all_syms)} symbols "
+                 f"(threshold={threshold}f/{spot_threshold}s)")
+
+    # 3) فحص كل عملة
+    found = []
+    cooldown_seconds = cooldown_h * 3600
+    now = datetime.now()
+
+    for sym, is_futures in all_syms:
+        # cooldown check
+        last_alert = db.last_scanner_alert(cid, sym)
+        if last_alert:
+            elapsed = (now - last_alert).total_seconds()
+            if elapsed < cooldown_seconds:
+                continue
+
+        try:
+            loop = asyncio.get_event_loop()
+            R = await asyncio.wait_for(
+                loop.run_in_executor(None, analyze, sym),
+                timeout=30
+            )
+            if not R or R.get("err"):
+                continue
+
+            action = R.get("action", "WAIT")
+            if action not in ("LONG", "SHORT"):
+                continue
+
+            long_s = R.get("long_score", 0)
+            short_s = R.get("short_score", 0)
+            score = long_s if action == "LONG" else short_s
+
+            # حد مختلف للسبوت
+            min_sc = threshold if is_futures else spot_threshold
+            if score < min_sc:
+                continue
+
+            found.append((action, sym, score, R, is_futures))
+
+        except asyncio.TimeoutError:
+            continue
+        except Exception as e:
+            logging.warning(f"Scanner v4 error for {sym}: {str(e)[:60]}")
+            continue
+
+    # 4) ترتيب حسب القوة (الأعلى أولاً)
+    found.sort(key=lambda x: x[2], reverse=True)
+
+    # 5) إرسال الإشارات (max_per_cycle)
+    sent_count = 0
+    for action, sym, score, R, is_futures in found[:max_per_cycle]:
+        try:
+            market_tag = "🔵 Futures" if is_futures else "🟣 Spot"
+            max_sc = 15 if is_futures else 11
+            pct = round(score / max_sc * 100)
+
+            header = (
+                f"📡 *مسح ذكي v4* — {market_tag}\n"
+                f"💪 قوة الإشارة: *{pct}%* ({score}/{max_sc})\n"
+                f"━━━━━━━━━━━━━━━━\n\n"
+            )
+            body = build_entry(R, alert=True)
+            full_msg = header + body
+
+            await ctx.bot.send_message(
+                cid, full_msg,
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(f"📊 تحليل كامل",
+                                         callback_data=f"r:{sym}"),
+                    InlineKeyboardButton(f"⚡ سكالب",
+                                         callback_data=f"s:{sym}"),
+                ]])
+            )
+            db.record_scanner_alert(cid, sym, action, float(score))
+            sent_count += 1
+        except Exception as e:
+            logging.warning(f"Scanner v4 send error: {e}")
+
+    if sent_count == 0 and len(found) == 0:
+        # نظافة دورية للتنبيهات القديمة
+        try:
+            db.cleanup_old_scanner_alerts(days=7)
+        except Exception:
+            pass
+
+    logging.info(f"Scanner v4 [{cid}]: scanned {len(all_syms)}, "
+                 f"found {len(found)}, sent {sent_count}")
+
 
 def build_entry(R, alert=False):
     if R.get("err"):
@@ -1669,8 +1840,12 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
         "📈 *Long-term:*\n"
         "`طويل BTC` — تحليل D1/W1 للـHodlers\n\n"
         "━━━━━━━━━━━━━━━━\n"
-        "⚡ *Scalping:* `سكالب BTC` | `تابع سكالب BTC`\n"
-        "🔍 *الماسح:* `ماسح` | `ماسح 8` | `وقف ماسح`\n\n"
+        "⚡ *Scalping:* `سكالب BTC` | `تابع سكالب BTC`\n\n"
+        "🔍 *الماسح الذكي v4 (~580 عملة Spot+Futures):*\n"
+        "`ماسح` — تفعيل (12/15 = 80% قوة)\n"
+        "`ماسح 13` — أقوى | `ماسح 9` — أكثر إشارات\n"
+        "`ماسح nospot` — فيوتشر فقط (~350)\n"
+        "`حالة الماسح` | `وقف ماسح`\n\n"
         "⚠️ _تحليلات تعليمية — البوت لا يفتح صفقات تلقائياً_",
         parse_mode="Markdown")
 
@@ -2215,39 +2390,116 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown")
         return
 
-    # ══ ماسح ICT ══
-    if text.startswith("ماسح") or text.lower()=="scanner":
-        parts=text.split(); min_sc=7
+    # ══ ماسح v4 (Spot + Futures, 80%+ confidence, DB persistence) ══
+    if text.startswith("ماسح") or text.lower() == "scanner":
+        parts = text.split()
+        threshold = 12  # افتراضي = 80% من 15 (الإشارات القوية)
+        scan_spot = True
+
         for p in parts:
             try:
-                n=int(p)
-                if 4<=n<=15: min_sc=n
-            except: pass
-        jn=f"sc_{chat_id}"
-        for j in c.job_queue.get_jobs_by_name(jn): j.schedule_removal()
-        c.job_queue.run_repeating(auto_scanner_job,interval=1800,first=30,
-            data={"chat_id":chat_id,"min_score":min_sc},name=jn)
-        try:
-            _sl = scan_lists.get(chat_id,[])
-            if _sl:
-                total = len(_sl)
-            else:
-                _all = get_futures_syms()
-                total = len(_all) if _all else 350
-        except:
-            total = 350
+                n = int(p)
+                # نقبل قيم بين 7-15 (47%-100%)
+                if 7 <= n <= 15:
+                    threshold = n
+            except ValueError:
+                pass
+            # خيار: إيقاف السبوت
+            if p.lower() in ("nospot", "بدون_سبوت", "futures_only"):
+                scan_spot = False
+
+        # 1) سجل في DB (يستمر بعد restart)
+        db.subscribe_scanner(chat_id, threshold=threshold,
+                             scan_spot=scan_spot,
+                             cooldown_hours=4,
+                             max_per_cycle=5)
+
+        # 2) جدول الـjob
+        jn = f"sc_v4_{chat_id}"
+        for j in c.job_queue.get_jobs_by_name(jn):
+            j.schedule_removal()
+        c.job_queue.run_repeating(
+            auto_scanner_v4_job,
+            interval=1800,  # كل 30 دقيقة
+            first=30,
+            data={"chat_id": chat_id},
+            name=jn,
+        )
+
+        # 3) إحصائيات
+        fut_count = len(get_futures_syms())
+        spot_count = 0
+        if scan_spot:
+            spot_only = [s for s in get_spot_syms()
+                         if s not in set(get_futures_syms())]
+            spot_count = len(spot_only)
+        total = fut_count + spot_count
+        spot_threshold = max(7, int(round(threshold * 11 / 15)))
+        pct = round(threshold / 15 * 100)
+
         await u.message.reply_text(
-            f"🔍 *تم تفعيل الماسح الذكي*\n\n"
+            f"🔍 *تم تفعيل الماسح الذكي v4*\n\n"
             f"⏱ كل 30 دقيقة | 📊 {total} عملة\n"
-            f"🎯 حد المؤشرات: ≥{min_sc} نقطة\n\n"
-            f"② Order Block | ③ FVG\n"
-            f"④ Smart Money | ⑤ ICP\n\n"
-            f"`ماسح 5` أكثر | `وقف ماسح` للإيقاف",
-            parse_mode="Markdown"); return
-    if text in ("وقف ماسح","stop scanner"):
-        jn=f"sc_{chat_id}"
-        for j in c.job_queue.get_jobs_by_name(jn): j.schedule_removal()
-        await u.message.reply_text("⛔ تم إيقاف الماسح"); return
+            f"   🔵 فيوتشر: {fut_count} (15 نقطة كاملة)\n"
+            f"   🟣 سبوت: {spot_count} (11 نقطة)\n\n"
+            f"🎯 *حد الإشارة القوية:*\n"
+            f"   • فيوتشر: ≥{threshold}/15 ({pct}%)\n"
+            f"   • سبوت: ≥{spot_threshold}/11 (≥80%)\n\n"
+            f"*المؤشرات الموزونة (15):*\n"
+            f"• ICT/SMC: 3 | MTF: 2 | MACD: 2\n"
+            f"• EMA Stack: 2 | RSI: 1 | CVD: 1\n"
+            f"• Funding/OI/L\\-S/Liq: 1+1+1+1 _(فيوتشر فقط)_\n\n"
+            f"💾 _الاشتراك محفوظ بعد restart_\n"
+            f"🛡 *Cooldown:* 4 ساعات لكل عملة\n\n"
+            f"`ماسح 13` أقوى | `ماسح 9` أكثر إشارات\n"
+            f"`ماسح nospot` فيوتشر فقط\n"
+            f"`وقف ماسح` للإيقاف | `حالة الماسح` للتفاصيل",
+            parse_mode="Markdown")
+        return
+
+    if text in ("وقف ماسح", "stop scanner"):
+        # حذف من DB + إيقاف الـjob
+        db.unsubscribe_scanner(chat_id)
+        jn = f"sc_v4_{chat_id}"
+        for j in c.job_queue.get_jobs_by_name(jn):
+            j.schedule_removal()
+        # إيقاف الماسح القديم لو شغال
+        for j in c.job_queue.get_jobs_by_name(f"sc_{chat_id}"):
+            j.schedule_removal()
+        await u.message.reply_text(
+            "⛔ تم إيقاف الماسح + حذف الاشتراك\n"
+            "_(`ماسح` لإعادة التفعيل)_",
+            parse_mode="Markdown")
+        return
+
+    if text in ("حالة الماسح", "حالة_الماسح", "scanner status"):
+        sub = db.get_scanner_subscriber(chat_id)
+        if not sub:
+            await u.message.reply_text(
+                "⚠️ الماسح غير مفعّل\n\nأرسل `ماسح` للتفعيل",
+                parse_mode="Markdown")
+            return
+        thr = sub["threshold"]
+        scan_spot = bool(sub["scan_spot"])
+        cd = sub["cooldown_hours"]
+        max_pc = sub["max_per_cycle"]
+        started = sub["started_at"]
+        fut_n = len(get_futures_syms())
+        spot_n = len([s for s in get_spot_syms()
+                      if s not in set(get_futures_syms())]) if scan_spot else 0
+
+        await u.message.reply_text(
+            f"📊 *حالة الماسح v4:*\n\n"
+            f"✅ مفعّل منذ: {started[:19]}\n"
+            f"🎯 الحد: {thr}/15 (فيوتشر) | {max(7, int(round(thr*11/15)))}/11 (سبوت)\n"
+            f"📊 العملات: {fut_n + spot_n} "
+            f"({fut_n} فيوتشر + {spot_n} سبوت)\n"
+            f"🛡 Cooldown: {cd} ساعات/عملة\n"
+            f"📨 أقصى/دورة: {max_pc} إشارات\n"
+            f"⏱ الدورة: كل 30 دقيقة",
+            parse_mode="Markdown")
+        return
+
     if text in ("قائمة الماسح",):
         try: lst=scan_lists.get(chat_id,[]) or get_futures_syms()
         except: lst=[]
@@ -2426,6 +2678,27 @@ async def _post_init(app):
     except Exception:
         sub_count = 0
 
+    # ⑩ المشتركون في الماسح v4 — جدول الـjobs لكل واحد
+    scanner_subs = []
+    try:
+        scanner_subs = db.get_scanner_subscribers()
+        for sub in scanner_subs:
+            cid = sub["chat_id"]
+            jn = f"sc_v4_{cid}"
+            for j in app.job_queue.get_jobs_by_name(jn):
+                j.schedule_removal()
+            app.job_queue.run_repeating(
+                auto_scanner_v4_job,
+                interval=1800,  # كل 30 دقيقة
+                first=60,        # أول دورة بعد دقيقة من البداية
+                data={"chat_id": cid},
+                name=jn,
+            )
+        if scanner_subs:
+            logging.info(f"Loaded {len(scanner_subs)} scanner subscribers")
+    except Exception as e:
+        logging.error(f"Failed to load scanner subscribers: {e}")
+
     print("=" * 60)
     print("  MAHMOUD TRADING BOT v4 — FULL EDITION ✅")
     print("=" * 60)
@@ -2455,6 +2728,11 @@ async def _post_init(app):
     print(f"  ├ Backtest   : ✅ مفعّل")
     print(f"  ├ Long-term  : ✅ D1+W1 مع Bollinger")
     print(f"  └ Bollinger  : ✅ مدمج في SIGNALS")
+    print(f"")
+    print(f"  Auto Scanner v4: ✅ مفعّل ({len(scanner_subs)} مشترك)")
+    print(f"  ├ النطاق     : Spot + Futures (~580 عملة)")
+    print(f"  ├ الحد       : 80%+ (12/15 فيوتشر، 9/11 سبوت)")
+    print(f"  └ الدورة     : كل 30 دقيقة")
     print("=" * 60)
     print("  أرسل /start على تيليقرام")
     print("=" * 60)
