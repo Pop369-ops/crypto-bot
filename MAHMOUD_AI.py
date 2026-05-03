@@ -135,22 +135,28 @@ def call_claude(prompt: str, system: str = CRYPTO_SYSTEM_PROMPT,
 # ─────────────────────────────────────────────
 
 def call_gemini(prompt: str, system: str = CRYPTO_SYSTEM_PROMPT,
-                max_tokens: int = 1500) -> Dict:
+                max_tokens: int = 1500, json_mode: bool = False) -> Dict:
     if not GEMINI_API_KEY:
         return {"ok": False, "error": "no_key"}
     try:
         url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}")
+
+        gen_config = {
+            "maxOutputTokens": max_tokens,
+            "temperature": 0.7,
+        }
+        # JSON mode (Gemini يضمن إرجاع JSON صحيح)
+        if json_mode:
+            gen_config["responseMimeType"] = "application/json"
+
         r = requests.post(
             url,
             headers={"content-type": "application/json"},
             json={
                 "systemInstruction": {"parts": [{"text": system}]},
                 "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "maxOutputTokens": max_tokens,
-                    "temperature": 0.7,
-                },
+                "generationConfig": gen_config,
             },
             timeout=HTTP_TIMEOUT,
         )
@@ -236,29 +242,45 @@ def call_all_ais(prompt: str, system: str = CRYPTO_SYSTEM_PROMPT,
 # ─────────────────────────────────────────────
 
 def extract_json(text: str) -> Optional[Dict]:
-    """يحاول يستخرج JSON من رد الـAI"""
+    """يحاول يستخرج JSON من رد الـAI - robust للـmulti-line"""
     if not text:
         return None
+    text = text.strip()
+
     # محاولة 1: رد JSON مباشر
     try:
-        return json.loads(text.strip())
+        return json.loads(text)
     except json.JSONDecodeError:
         pass
-    # محاولة 2: داخل ```json ... ```
+
+    # محاولة 2: داخل ```json ... ``` (multi-line greedy)
     import re
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if m:
+    for pattern in [
+        r"```(?:json)?\s*(\{.*\})\s*```",  # markdown block
+        r"```(?:json)?\s*(\[.*\])\s*```",  # array
+    ]:
+        m = re.search(pattern, text, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(1).strip())
+            except json.JSONDecodeError:
+                continue
+
+    # محاولة 3: أول { ... } لآخر } في النص (greedy)
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace >= 0 and last_brace > first_brace:
+        candidate = text[first_brace:last_brace + 1]
         try:
-            return json.loads(m.group(1))
+            return json.loads(candidate)
         except json.JSONDecodeError:
-            pass
-    # محاولة 3: أول { ... }
-    m = re.search(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", text, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except json.JSONDecodeError:
-            pass
+            # محاولة 4: تنظيف trailing commas
+            cleaned = re.sub(r",(\s*[}\]])", r"\1", candidate)
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError:
+                pass
+
     return None
 
 
@@ -623,7 +645,6 @@ def analyze_news_item(title: str, summary: str = "",
         valid = [(n, r) for n, r in results.items() if r.get("ok") and r.get("text")]
         if not valid:
             return {"ok": False, "error": "all_failed"}
-        # نأخذ من Claude أفضل، أو الأطول
         primary_name = "claude" if any(n == "claude" for n, _ in valid) else valid[0][0]
         primary = next(r for n, r in valid if n == primary_name)
         text = primary["text"]
@@ -631,16 +652,20 @@ def analyze_news_item(title: str, summary: str = "",
         if prefer == "claude":
             r = call_claude(prompt, system=NEWS_ANALYSIS_PROMPT, max_tokens=800)
         elif prefer == "gemini":
-            r = call_gemini(prompt, system=NEWS_ANALYSIS_PROMPT, max_tokens=800)
+            # Gemini مع JSON mode (يضمن إرجاع JSON صحيح)
+            r = call_gemini(prompt, system=NEWS_ANALYSIS_PROMPT,
+                            max_tokens=800, json_mode=True)
         else:
             r = call_openai(prompt, system=NEWS_ANALYSIS_PROMPT, max_tokens=800)
         if not r.get("ok"):
-            return {"ok": False, "error": r.get("error", "unknown")}
+            return {"ok": False, "error": r.get("error", "unknown"),
+                    "detail": r.get("detail", "")}
         text = r["text"]
 
     parsed = extract_json(text) or {}
     if not parsed:
-        return {"ok": False, "error": "json_parse_failed", "raw": text}
+        return {"ok": False, "error": "json_parse_failed",
+                "raw": text[:500] if text else ""}
 
     return {"ok": True, "analysis": parsed, "ai_used": prefer}
 

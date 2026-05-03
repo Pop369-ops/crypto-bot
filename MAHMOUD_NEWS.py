@@ -415,19 +415,36 @@ async def ai_analyze_pending_news(max_items: int = 5,
             )
             if result.get("ok"):
                 a = result["analysis"]
+                # تأكد إن الحقول الإجبارية موجودة
+                summary = a.get("summary_ar", "")
+                action = a.get("action_ar", "")
+                if not summary and not action:
+                    logging.warning(f"AI returned empty fields for news {n['id']}: keys={list(a.keys())}")
+                    continue
                 db.update_news_ai(
                     news_id=n["id"],
-                    ai_summary=a.get("summary_ar", "")[:500],
-                    ai_action=a.get("action_ar", "")[:500],
-                    ai_levels=a.get("key_levels_ar", "")[:300],
+                    ai_summary=str(summary)[:500],
+                    ai_action=str(action)[:500],
+                    ai_levels=str(a.get("key_levels_ar", ""))[:300],
                     ai_horizon=a.get("horizon", "hours"),
                     ai_sentiment=a.get("direction"),
                     ai_impact=a.get("impact_score"),
                 )
                 analyzed += 1
-            await asyncio.sleep(1)  # سلس على الـAPI
-        except (asyncio.TimeoutError, Exception) as e:
-            logging.warning(f"AI analysis timeout/err for news {n.get('id')}: {e}")
+                logging.info(f"AI ✅ analyzed news {n['id']}: '{n['title'][:50]}...'")
+            else:
+                err = result.get("error", "unknown")
+                detail = result.get("detail", "")[:100]
+                raw = result.get("raw", "")[:100]
+                logging.warning(f"AI ❌ failed news {n['id']}: {err} | "
+                                f"detail={detail} | raw={raw}")
+            await asyncio.sleep(0.5)
+        except asyncio.TimeoutError:
+            logging.warning(f"AI ⏱ timeout for news {n.get('id')}")
+            continue
+        except Exception as e:
+            logging.warning(f"AI 💥 error for news {n.get('id')}: "
+                            f"{type(e).__name__}: {e}")
             continue
 
     return analyzed
