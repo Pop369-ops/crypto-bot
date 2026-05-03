@@ -2437,23 +2437,74 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
         parts = text.split()
         if len(parts) < 5:
             await u.message.reply_text(
-                "*استخدام:*\n"
-                "`greeks BTC 45000 30 call`\n"
-                "          ↑    ↑    ↑    ↑\n"
-                "        عملة strike  أيام  call/put\n\n"
-                "*مثال:* `greeks BTC 50000 7 put`",
+                "💎 *Greeks Calculator*\n"
+                "━━━━━━━━━━━━━━━━━\n"
+                "*الصيغة:*\n"
+                "`greeks <عملة> <strike> <أيام> <call/put>`\n\n"
+                "*أمثلة جاهزة (انسخ واستبدل):*\n\n"
+                "🟢 *Call options:*\n"
+                "`greeks BTC 50000 30 call`\n"
+                "`greeks ETH 3500 14 call`\n"
+                "`greeks SOL 220 30 call`\n\n"
+                "🔴 *Put options:*\n"
+                "`greeks BTC 40000 30 put`\n"
+                "`greeks ETH 2500 14 put`\n"
+                "`greeks SOL 180 30 put`\n\n"
+                "💡 *نصيحة:* للحصول على سعر ATM (At The Money)، "
+                "استخدم سعر قريب من السعر الحالي للعملة.\n\n"
+                "📊 *الأيام الموصى بها:* 7, 14, 30, 60, 90",
                 parse_mode="Markdown")
             return
 
         try:
             cur = parts[1].upper().replace("USDT", "")
-            strike = float(parts[2])
-            days = int(parts[3])
+            strike_raw = parts[2]
+            days_raw = parts[3]
             opt_type = parts[4].lower()
+
+            # تحقق من placeholder شائع
+            if any(s in strike_raw for s in ("<", ">", "[", "]", "أيام", "strike")):
+                await u.message.reply_text(
+                    "⚠️ يبدو إنك نسخت المثال زي ما هو!\n\n"
+                    "❌ *خطأ:* `greeks SOL <strike> <days> call/put`\n\n"
+                    "✅ *الصحيح:* `greeks SOL 200 30 call`\n"
+                    "                              ↑    ↑\n"
+                    "                          استبدل بأرقام\n\n"
+                    "💡 جرّب: `greeks SOL 200 30 call`",
+                    parse_mode="Markdown")
+                return
+
+            strike = float(strike_raw)
+            days = int(days_raw)
+
             if opt_type not in ("call", "put"):
-                raise ValueError("type must be call or put")
-        except (ValueError, IndexError) as e:
-            await u.message.reply_text(f"❌ خطأ في القراءة: {str(e)[:80]}")
+                await u.message.reply_text(
+                    f"❌ النوع لازم يكون `call` أو `put` (مش `{opt_type}`)\n\n"
+                    f"جرّب: `greeks {cur} {strike} {days} call`",
+                    parse_mode="Markdown")
+                return
+
+            if strike <= 0:
+                await u.message.reply_text(
+                    f"❌ Strike لازم يكون رقم موجب (مش `{strike}`)")
+                return
+
+            if days <= 0 or days > 365:
+                await u.message.reply_text(
+                    f"❌ الأيام لازم تكون بين 1 و 365 (مش `{days}`)")
+                return
+
+        except ValueError as e:
+            await u.message.reply_text(
+                f"❌ *خطأ في الأرقام*\n\n"
+                f"تأكد إن:\n"
+                f"• Strike رقم (مثال: 200, 45000)\n"
+                f"• الأيام رقم صحيح (مثال: 7, 30, 90)\n\n"
+                f"💡 جرّب: `greeks {parts[1] if len(parts) > 1 else 'BTC'} 45000 30 call`",
+                parse_mode="Markdown")
+            return
+        except IndexError:
+            await u.message.reply_text("❌ ناقص parameters - راجع الصيغة")
             return
 
         wait = await u.message.reply_text(

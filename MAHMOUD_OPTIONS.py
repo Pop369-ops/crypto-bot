@@ -1332,13 +1332,30 @@ def fmt_options_overview(chain: Dict, top_n: int = 5) -> str:
         msg += f"📐 *Strikes المتاحة:* {len(all_strikes)} مستوى\n"
         msg += f"`${all_strikes[0]:,.4f}` — `${all_strikes[-1]:,.4f}`\n\n"
 
+        # نقترح أمثلة حقيقية بناءً على spot price
+        atm_strike_for_example = all_strikes[len(all_strikes) // 2]
+        otm_call_strike = all_strikes[len(all_strikes) // 2 + 1] if len(all_strikes) > len(all_strikes) // 2 + 1 else atm_strike_for_example
+        otm_put_strike = all_strikes[len(all_strikes) // 2 - 1] if len(all_strikes) > 1 else atm_strike_for_example
+
+        # نختار format للأرقام حسب الحجم
+        if spot < 1:
+            fmt_strike = lambda x: f"{x:.4f}"
+        elif spot < 100:
+            fmt_strike = lambda x: f"{x:.2f}"
+        else:
+            fmt_strike = lambda x: f"{int(x)}"
+
         msg += "━━━━━━━━━━━━━━━━━━\n"
-        msg += "💡 *الأوامر المتاحة:*\n"
-        msg += f"`greeks {cur} <strike> <days> call/put`\n"
-        msg += f"`استراتيجية {cur} bullish/bearish/volatile`\n"
-        msg += f"_(لا يوجد maxpain للـsynthetic)_\n\n"
-        msg += "💎 *للحصول على real options:*\n"
-        msg += "جرّب: BTC, ETH, SOL"
+        msg += "💡 *جرّب الأوامر دي مباشرة:*\n\n"
+        msg += f"📊 *Greeks:*\n"
+        msg += f"`greeks {cur} {fmt_strike(atm_strike_for_example)} 30 call`\n"
+        msg += f"`greeks {cur} {fmt_strike(otm_put_strike)} 14 put`\n\n"
+        msg += f"💎 *استراتيجيات:*\n"
+        msg += f"`استراتيجية {cur} bullish` (صاعد)\n"
+        msg += f"`استراتيجية {cur} bearish` (هابط)\n"
+        msg += f"`استراتيجية {cur} volatile` (تذبذب)\n\n"
+        msg += "💎 *للحصول على real options بـOI/Skew/MaxPain:*\n"
+        msg += "جرّب: `خيارات BTC` أو `خيارات ETH` أو `خيارات SOL`"
 
         return msg
 
