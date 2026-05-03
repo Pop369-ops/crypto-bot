@@ -68,6 +68,10 @@ DERIBIT_CURRENCIES = ["BTC", "ETH", "SOL"]
 # OKX options يدعم: BTC, ETH أساساً
 OKX_CURRENCIES = ["BTC", "ETH"]
 
+# Binance Futures (للحصول على Realized Volatility لأي عملة)
+BINANCE_FUTURES_BASE = "https://fapi.binance.com/fapi/v1"
+BINANCE_SPOT_BASE = "https://api.binance.com/api/v3"
+
 # OKX API credentials (اختياري - public market data ما يحتاج auth)
 OKX_API_KEY = os.environ.get("OKX_API_KEY", "")
 OKX_SECRET = os.environ.get("OKX_API_SECRET", "")
@@ -258,8 +262,301 @@ def okx_get_options_summary(currency: str,
 
 
 # ─────────────────────────────────────────────
-# Smart Currency Router
+# Binance Fetcher (للـRealized Volatility + سعر العملات)
 # ─────────────────────────────────────────────
+
+def binance_get_klines(symbol: str, interval: str = "1d",
+                       limit: int = 30) -> List[List]:
+    """
+    يجلب klines من Binance Futures (مع Spot fallback).
+    يرجع: [[time, open, high, low, close, volume, ...], ...]
+    """
+    sym = symbol.upper()
+    if not sym.endswith("USDT"):
+        sym += "USDT"
+
+    # نجرب Futures أولاً
+    for url in [f"{BINANCE_FUTURES_BASE}/klines", f"{BINANCE_SPOT_BASE}/klines"]:
+        try:
+            r = requests.get(url,
+                             params={"symbol": sym, "interval": interval,
+                                     "limit": limit},
+                             headers=DEFAULT_HEADERS,
+                             timeout=HTTP_TIMEOUT)
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, list) and len(data) > 0:
+                    return data
+        except Exception:
+            continue
+    return []
+
+
+def binance_get_price(symbol: str) -> Optional[float]:
+    """يجلب السعر الحالي من Binance"""
+    sym = symbol.upper()
+    if not sym.endswith("USDT"):
+        sym += "USDT"
+
+    for url in [f"{BINANCE_FUTURES_BASE}/ticker/price",
+                f"{BINANCE_SPOT_BASE}/ticker/price"]:
+        try:
+            r = requests.get(url,
+                             params={"symbol": sym},
+                             headers=DEFAULT_HEADERS,
+                             timeout=HTTP_TIMEOUT)
+            if r.status_code == 200:
+                data = r.json()
+                if "price" in data:
+                    return float(data["price"])
+        except Exception:
+            continue
+    return None
+
+
+# ─────────────────────────────────────────────
+# Realized Volatility (للـSynthetic IV)
+# ─────────────────────────────────────────────
+
+def calc_realized_volatility(symbol: str, days: int = 30) -> Optional[Dict]:
+    """
+    يحسب التقلب التاريخي (Realized Volatility) من Binance.
+
+    الطريقة:
+    1. نجلب آخر N يوم من klines
+    2. نحسب daily log returns
+    3. Std dev للـreturns × √365 = annualized volatility
+
+    Returns:
+    {
+        "ok": bool,
+        "symbol": "SOL",
+        "rv_daily": 0.045,          # 4.5% daily
+        "rv_annualized": 0.86,      # 86% annual
+        "rv_pct": 86.0,
+        "days_used": 30,
+        "current_price": 200.5,
+    }
+    """
+    try:
+        klines = binance_get_klines(symbol, interval="1d", limit=days + 1)
+        if len(klines) < days // 2:
+            return {"ok": False, "error": "بيانات غير كافية من Binance"}
+
+        # نأخذ closes فقط
+        closes = [float(k[4]) for k in klines]
+        if len(closes) < 5:
+            return {"ok": False, "error": "بيانات قليلة جداً"}
+
+        # نحسب log returns
+        log_returns = []
+        for i in range(1, len(closes)):
+            if closes[i - 1] > 0 and closes[i] > 0:
+                log_returns.append(math.log(closes[i] / closes[i - 1]))
+
+        if len(log_returns) < 5:
+            return {"ok": False, "error": "returns قليلة"}
+
+        # Standard deviation
+        mean_r = sum(log_returns) / len(log_returns)
+        variance = sum((r - mean_r) ** 2 for r in log_returns) / (len(log_returns) - 1)
+        std_daily = math.sqrt(variance)
+
+        # Annualized (×√365 لأن الكريبتو 24/7)
+        std_annualized = std_daily * math.sqrt(365)
+
+        return {
+            "ok": True,
+            "symbol": symbol.upper().replace("USDT", ""),
+            "rv_daily": round(std_daily, 4),
+            "rv_annualized": round(std_annualized, 4),
+            "rv_pct": round(std_annualized * 100, 2),
+            "days_used": len(log_returns),
+            "current_price": closes[-1],
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:100]}
+
+
+# ─────────────────────────────────────────────
+# Auto-Discovery (يكتشف العملات المدعومة من Deribit/OKX)
+# ─────────────────────────────────────────────
+
+_DISCOVERED_CURRENCIES = None  # cache
+
+
+def discover_currencies(force_refresh: bool = False) -> Dict[str, List[str]]:
+    """
+    يكتشف العملات المدعومة فعلياً في Deribit/OKX (live).
+    يـcache النتيجة.
+
+    Returns: {"deribit": [...], "okx": [...]}
+    """
+    global _DISCOVERED_CURRENCIES
+
+    if _DISCOVERED_CURRENCIES is not None and not force_refresh:
+        return _DISCOVERED_CURRENCIES
+
+    deribit_currs = []
+    okx_currs = []
+
+    # Deribit: نستعلم كل العملات
+    try:
+        result = deribit_get("/public/get_currencies")
+        if isinstance(result, list):
+            deribit_currs = sorted([
+                c.get("currency", "") for c in result
+                if c.get("currency")
+            ])
+    except Exception:
+        deribit_currs = DERIBIT_CURRENCIES.copy()
+
+    # OKX: نسجّل قائمة معروفة (الـAPI يحتاج لكل عملة طلب منفصل)
+    okx_currs = OKX_CURRENCIES.copy()
+
+    _DISCOVERED_CURRENCIES = {
+        "deribit": deribit_currs or DERIBIT_CURRENCIES.copy(),
+        "okx": okx_currs,
+    }
+    return _DISCOVERED_CURRENCIES
+
+
+# ─────────────────────────────────────────────
+# Synthetic Options (لأي عملة - باستخدام RV من Binance)
+# ─────────────────────────────────────────────
+
+def get_synthetic_chain(currency: str,
+                        days_list: List[int] = None) -> Dict:
+    """
+    يبني options chain "synthetic" لأي عملة.
+
+    الفكرة:
+    1. نجلب RV من Binance (30 يوم)
+    2. نضيف premium مناسب (RV × 1.15 ≈ IV typical)
+    3. نولّد strikes حول السعر الحالي (-30%, -20%, -10%, ATM, +10%, +20%, +30%)
+    4. نحسب Greeks لكل strike لكل expiry بـBlack-Scholes
+
+    Returns: نفس structure كـreal chain لكن مع flag synthetic=True
+    """
+    if days_list is None:
+        days_list = [7, 14, 30, 60, 90]
+
+    # ① نحصل على RV
+    rv_data = calc_realized_volatility(currency, days=30)
+    if not rv_data.get("ok"):
+        return {"ok": False, "error": rv_data.get("error", "RV failed"),
+                "synthetic": True}
+
+    spot = rv_data["current_price"]
+    rv_annual = rv_data["rv_annualized"]
+
+    # ② IV synthetic = RV × 1.15 (premium typical في options vs realized)
+    iv_synthetic = rv_annual * 1.15
+    iv_synthetic = max(0.20, min(3.0, iv_synthetic))  # clamp 20%-300%
+
+    # ③ نولّد strikes
+    strike_pcts = [-30, -20, -10, -5, 0, 5, 10, 20, 30]
+
+    # نقرّب strikes حسب السعر
+    if spot > 10000:
+        round_to = 1000
+    elif spot > 1000:
+        round_to = 100
+    elif spot > 100:
+        round_to = 10
+    elif spot > 10:
+        round_to = 1
+    elif spot > 1:
+        round_to = 0.1
+    else:
+        round_to = 0.01
+
+    strikes = []
+    for pct in strike_pcts:
+        raw = spot * (1 + pct / 100)
+        rounded = round(raw / round_to) * round_to
+        strikes.append(round(rounded, 8))
+    strikes = sorted(set(strikes))
+
+    # ④ نحسب Greeks لكل strike × expiry
+    calls = []
+    puts = []
+    expiries_used = []
+
+    for days in days_list:
+        T = days / 365
+        expiry_label = f"{days}D"
+        expiries_used.append(expiry_label)
+
+        # IV varies slightly with maturity (term structure)
+        # Short-term IV عادة أعلى قليلاً
+        if days <= 14:
+            iv_use = iv_synthetic * 1.05
+        elif days >= 60:
+            iv_use = iv_synthetic * 0.95
+        else:
+            iv_use = iv_synthetic
+
+        for K in strikes:
+            # Call
+            g_call = black_scholes_greeks(spot, K, T, r=0.0,
+                                           sigma=iv_use, option_type="call")
+            if g_call.get("ok"):
+                calls.append({
+                    "strike": K,
+                    "expiry": expiry_label,
+                    "instrument": f"{currency}-{expiry_label}-{int(K)}-C",
+                    "iv": round(iv_use, 4),
+                    "iv_pct": round(iv_use * 100, 2),
+                    "delta": g_call["delta"],
+                    "gamma": g_call["gamma"],
+                    "theta": g_call["theta"],
+                    "vega": g_call["vega"],
+                    "mark": g_call["price"],
+                    "bid": 0,
+                    "ask": 0,
+                    "oi": 0,        # synthetic: no real OI
+                    "volume": 0,
+                })
+
+            # Put
+            g_put = black_scholes_greeks(spot, K, T, r=0.0,
+                                          sigma=iv_use, option_type="put")
+            if g_put.get("ok"):
+                puts.append({
+                    "strike": K,
+                    "expiry": expiry_label,
+                    "instrument": f"{currency}-{expiry_label}-{int(K)}-P",
+                    "iv": round(iv_use, 4),
+                    "iv_pct": round(iv_use * 100, 2),
+                    "delta": g_put["delta"],
+                    "gamma": g_put["gamma"],
+                    "theta": g_put["theta"],
+                    "vega": g_put["vega"],
+                    "mark": g_put["price"],
+                    "bid": 0,
+                    "ask": 0,
+                    "oi": 0,
+                    "volume": 0,
+                })
+
+    return {
+        "ok": True,
+        "currency": currency.upper().replace("USDT", ""),
+        "exchange": "synthetic",
+        "spot_price": spot,
+        "expiries": expiries_used,
+        "calls": sorted(calls, key=lambda x: (x["expiry"], x["strike"])),
+        "puts": sorted(puts, key=lambda x: (x["expiry"], x["strike"])),
+        "total_call_oi": 0,
+        "total_put_oi": 0,
+        "put_call_ratio": 0,
+        "synthetic": True,
+        "rv_data": rv_data,
+        "iv_used": round(iv_synthetic, 4),
+        "iv_used_pct": round(iv_synthetic * 100, 2),
+    }
+
 
 def get_supported_currency(currency: str) -> Tuple[str, str]:
     """
@@ -282,36 +579,63 @@ def get_supported_currency(currency: str) -> Tuple[str, str]:
 # ─────────────────────────────────────────────
 
 def get_options_chain(currency: str,
-                      expiry_filter: Optional[str] = None) -> Dict:
+                      expiry_filter: Optional[str] = None,
+                      allow_synthetic: bool = True) -> Dict:
     """
-    يجلب options chain موحّد بغض النظر عن البورصة.
+    يجلب options chain موحّد بـsmart routing:
+    1. يحاول Deribit (لو مدعوم)
+    2. ثم OKX (لو مدعوم)
+    3. ثم Synthetic (Black-Scholes من Binance RV)
+
+    Args:
+        currency: العملة (BTC, ETH, SOL, ADA, ANY)
+        expiry_filter: للـreal options فقط
+        allow_synthetic: لو False، يرجع error إذا ما فيه real options
 
     Returns:
     {
         "ok": bool,
         "currency": "BTC",
-        "exchange": "deribit",
+        "exchange": "deribit" | "okx" | "synthetic",
         "spot_price": 43500.0,
-        "expiries": ["3MAY26", "10MAY26", ...],
-        "calls": [{"strike", "iv", "delta", "gamma", "theta", "vega",
-                   "bid", "ask", "mark", "oi", "volume"}, ...],
-        "puts": [...],
-        "total_call_oi": float,
-        "total_put_oi": float,
-        "put_call_ratio": float,
+        "synthetic": False,  # True لو Black-Scholes
+        ...
     }
     """
-    cur, exchange = get_supported_currency(currency)
+    cur = currency.upper().replace("USDT", "").replace("USD", "")
 
-    if exchange == "none":
-        return {"ok": False,
-                "error": f"عملة {cur} غير مدعومة في Deribit أو OKX",
-                "supported": list(set(DERIBIT_CURRENCIES + OKX_CURRENCIES))}
+    # ① حاول Deribit
+    if cur in DERIBIT_CURRENCIES:
+        chain = _get_deribit_chain(cur, expiry_filter)
+        if chain.get("ok") and len(chain.get("calls", [])) > 0:
+            chain["synthetic"] = False
+            return chain
 
-    if exchange == "deribit":
-        return _get_deribit_chain(cur, expiry_filter)
-    else:  # okx
-        return _get_okx_chain(cur, expiry_filter)
+    # ② حاول OKX
+    if cur in OKX_CURRENCIES:
+        chain = _get_okx_chain(cur, expiry_filter)
+        if chain.get("ok") and len(chain.get("calls", [])) > 0:
+            chain["synthetic"] = False
+            return chain
+
+    # ③ Synthetic fallback (لأي عملة)
+    if allow_synthetic:
+        synthetic_chain = get_synthetic_chain(cur)
+        if synthetic_chain.get("ok"):
+            return synthetic_chain
+        return {
+            "ok": False,
+            "error": f"❌ {cur}: ما قدرت أجلب أي بيانات\n"
+                     f"السبب: {synthetic_chain.get('error', 'unknown')}\n\n"
+                     f"تأكد إن العملة موجودة على Binance",
+        }
+
+    return {
+        "ok": False,
+        "error": f"عملة {cur} ما تدعم real options\n"
+                 f"المدعومة فعلياً: {', '.join(set(DERIBIT_CURRENCIES + OKX_CURRENCIES))}\n"
+                 f"للحصول على Greeks synthetic، استخدم بدون allow_synthetic=False"
+    }
 
 
 def _get_deribit_chain(currency: str,
@@ -505,6 +829,10 @@ def calc_max_pain(chain: Dict) -> Dict:
     """
     if not chain.get("ok"):
         return {"max_pain": None}
+
+    # Synthetic ما عنده OI حقيقي = max pain ما يصلح
+    if chain.get("synthetic"):
+        return {"max_pain": None, "synthetic_skip": True}
 
     calls = chain["calls"]
     puts = chain["puts"]
@@ -942,21 +1270,80 @@ def recommend_strategy(chain: Dict, outlook: str = "neutral") -> Dict:
 # ─────────────────────────────────────────────
 
 def fmt_options_overview(chain: Dict, top_n: int = 5) -> str:
-    """تنسيق نظرة عامة على options chain"""
+    """تنسيق نظرة عامة على options chain (Real أو Synthetic)"""
     if not chain.get("ok"):
         err = chain.get("error", "?")
-        sup = chain.get("supported", [])
-        msg = f"❌ {err}\n"
-        if sup:
-            msg += f"العملات المدعومة: {', '.join(sup)}"
-        return msg
+        return f"❌ {err}"
 
     cur = chain["currency"]
     spot = chain["spot_price"]
     exch = chain["exchange"].upper()
     expiries = chain["expiries"][:5]
-    pcr = chain["put_call_ratio"]
+    is_synthetic = chain.get("synthetic", False)
 
+    # Header مختلف للـSynthetic
+    if is_synthetic:
+        rv = chain.get("rv_data", {})
+        iv_used_pct = chain.get("iv_used_pct", 0)
+        msg = f"📊 *Synthetic Options — {cur}* ⚠️\n"
+        msg += f"━━━━━━━━━━━━━━━━━━\n"
+        msg += f"💰 السعر الحالي: `${spot:,.6f}`\n"
+        msg += f"📡 المصدر: *Black-Scholes Calculator*\n"
+        msg += f"📊 RV (30D): {rv.get('rv_pct', 0):.1f}% (Realized)\n"
+        msg += f"📈 IV المستخدم: {iv_used_pct:.1f}% (RV × 1.15)\n"
+        msg += f"📅 Expiries: {', '.join(expiries)}\n\n"
+
+        msg += "⚠️ *ملاحظة مهمة:*\n"
+        msg += "هذي البيانات *حسابية* (Synthetic) — لا توجد options "
+        msg += "حقيقية لـ" + cur + " على Deribit/OKX.\n"
+        msg += "الـGreeks محسوبة بـBlack-Scholes من تذبذب Binance التاريخي.\n\n"
+        msg += "*لا يوجد:* OI, Volume, Skew, Max Pain, Bid/Ask\n\n"
+
+        # نعرض sample من Greeks للـATM
+        atm_strike = min(set(c["strike"] for c in chain["calls"]),
+                         key=lambda x: abs(x - spot))
+
+        # ATM call عبر expiries
+        msg += f"📊 *ATM Call (${atm_strike:,.4f}) — Greeks لكل Expiry:*\n"
+        msg += "```\n"
+        msg += "Days  Price     Δ      Γ        Θ/day\n"
+        for exp in expiries:
+            atm_calls = [c for c in chain["calls"]
+                         if c["strike"] == atm_strike and c["expiry"] == exp]
+            if atm_calls:
+                c = atm_calls[0]
+                msg += f"{exp:<5} ${c['mark']:>8.4f} {c['delta']:+.2f} {c['gamma']:.5f} ${c['theta']:>+7.4f}\n"
+        msg += "```\n\n"
+
+        # ATM put مماثل
+        msg += f"📊 *ATM Put (${atm_strike:,.4f}) — Greeks لكل Expiry:*\n"
+        msg += "```\n"
+        msg += "Days  Price     Δ      Γ        Θ/day\n"
+        for exp in expiries:
+            atm_puts = [p for p in chain["puts"]
+                        if p["strike"] == atm_strike and p["expiry"] == exp]
+            if atm_puts:
+                p = atm_puts[0]
+                msg += f"{exp:<5} ${p['mark']:>8.4f} {p['delta']:+.2f} {p['gamma']:.5f} ${p['theta']:>+7.4f}\n"
+        msg += "```\n\n"
+
+        # Strikes range
+        all_strikes = sorted(set(c["strike"] for c in chain["calls"]))
+        msg += f"📐 *Strikes المتاحة:* {len(all_strikes)} مستوى\n"
+        msg += f"`${all_strikes[0]:,.4f}` — `${all_strikes[-1]:,.4f}`\n\n"
+
+        msg += "━━━━━━━━━━━━━━━━━━\n"
+        msg += "💡 *الأوامر المتاحة:*\n"
+        msg += f"`greeks {cur} <strike> <days> call/put`\n"
+        msg += f"`استراتيجية {cur} bullish/bearish/volatile`\n"
+        msg += f"_(لا يوجد maxpain للـsynthetic)_\n\n"
+        msg += "💎 *للحصول على real options:*\n"
+        msg += "جرّب: BTC, ETH, SOL"
+
+        return msg
+
+    # ─── Real Options (Deribit/OKX) ───
+    pcr = chain["put_call_ratio"]
     iv_metrics = calc_iv_metrics(chain)
     max_pain = calc_max_pain(chain)
     top_oi = get_top_oi_strikes(chain, top_n)
@@ -969,7 +1356,7 @@ def fmt_options_overview(chain: Dict, top_n: int = 5) -> str:
     elif pcr < 0.7:
         pcr_interp = "🟢 توقعات صاعدة (Calls أكثر)"
 
-    msg = f"📊 *Options Overview — {cur}*\n"
+    msg = f"📊 *Options Overview — {cur}* ✅ REAL\n"
     msg += f"━━━━━━━━━━━━━━━━━━\n"
     msg += f"💰 السعر الحالي: `${spot:,.2f}`\n"
     msg += f"📡 المصدر: *{exch}*\n"

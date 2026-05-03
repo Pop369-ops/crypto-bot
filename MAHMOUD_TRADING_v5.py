@@ -1975,11 +1975,13 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
         "`طويل BTC` — تحليل D1/W1 للـHodlers\n\n"
         "━━━━━━━━━━━━━━━━\n"
         "💎 *Options Suite (Greeks):*\n"
-        "`خيارات BTC` — Overview + IV + Max Pain + Top OI ⭐\n"
+        "`خيارات BTC` — Real options (Deribit) ⭐\n"
+        "`خيارات ETH` / `خيارات SOL` — Real options\n"
+        "`خيارات [أي عملة]` — Synthetic Greeks (Black-Scholes)\n"
         "`greeks BTC 45000 30 call` — Greeks لعقد محدد\n"
         "`استراتيجية BTC bullish` — اقتراح استراتيجية\n"
-        "`maxpain BTC` — Max Pain تفصيلي\n"
-        "_العملات المدعومة: BTC, ETH, SOL_\n\n"
+        "`maxpain BTC` — Max Pain (للـreal options فقط)\n"
+        "_Real: BTC, ETH, SOL | Synthetic: أي عملة_\n\n"
         "━━━━━━━━━━━━━━━━\n"
         "🏥 *تشخيص:*\n"
         "`صحة` — فحص شامل لكل المكونات\n\n"
@@ -2581,6 +2583,17 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
 
             mp = opt_mod.calc_max_pain(chain)
             await wait.delete()
+
+            # Synthetic — لا يوجد OI حقيقي
+            if mp.get("synthetic_skip"):
+                await u.message.reply_text(
+                    f"⚠️ *Max Pain غير متاح لـ{cur}*\n\n"
+                    f"عملة {cur} ما عندها options حقيقية على Deribit/OKX، "
+                    f"لذلك Max Pain ما يحسب (يحتاج Open Interest حقيقي).\n\n"
+                    f"💡 *Max Pain متاح لـ:* BTC, ETH, SOL\n"
+                    f"للحصول على Greeks لـ{cur}: `خيارات {cur}`",
+                    parse_mode="Markdown")
+                return
 
             if not mp.get("max_pain"):
                 await u.message.reply_text(f"❌ ما قدرت أحسب Max Pain لـ{cur}")
