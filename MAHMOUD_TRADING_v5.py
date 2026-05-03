@@ -2272,6 +2272,118 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
     # الأوامر القديمة (متابعة عملة، ماسح، سكالب)
     # ═══════════════════════════════════════════
 
+    # ── حيتان (Whale Alert) ──
+    if text in ("حيتان", "whales", "whale"):
+        if not whale_mod.is_available():
+            await u.message.reply_text(
+                "❌ *Whale Alert غير مفعّل*\n\n"
+                "لتفعيله:\n"
+                "1. سجّل في https://docs.whale-alert.io/\n"
+                "2. أضف `WHALE_ALERT_KEY` في Railway Variables\n"
+                "3. (اختياري) `MIN_WHALE_USD=1000000`",
+                parse_mode="Markdown")
+            return
+        try:
+            await u.message.reply_text(
+                whale_mod.whales_msg(hours=6, limit=15),
+                parse_mode="Markdown",
+                disable_web_page_preview=True)
+        except Exception as e:
+            await u.message.reply_text(f"❌ خطأ: {str(e)[:100]}")
+        return
+
+    if text_lower.startswith("حيتان "):
+        parts = text.split()
+        coin_sym = parts[1].upper() if len(parts) > 1 else ""
+        if not whale_mod.is_available():
+            await u.message.reply_text(
+                "❌ *Whale Alert غير مفعّل*\n"
+                "أضف `WHALE_ALERT_KEY` في Railway Variables",
+                parse_mode="Markdown")
+            return
+        try:
+            await u.message.reply_text(
+                whale_mod.whales_msg(symbol=coin_sym, hours=24, limit=20),
+                parse_mode="Markdown",
+                disable_web_page_preview=True)
+        except Exception as e:
+            await u.message.reply_text(f"❌ خطأ: {str(e)[:100]}")
+        return
+
+    # ── backtest BTC 30 ──
+    if text_lower.startswith("backtest"):
+        parts = text.split()
+        if len(parts) < 2:
+            await u.message.reply_text(
+                "مثال: `backtest BTC 30` (آخر 30 يوم)\n"
+                "أو: `backtest ETH 60`",
+                parse_mode="Markdown")
+            return
+        sym = parts[1].upper()
+        if not sym.endswith("USDT"):
+            sym += "USDT"
+        days = 30
+        if len(parts) >= 3:
+            try:
+                days = max(7, min(180, int(parts[2])))
+            except ValueError:
+                pass
+
+        wait = await u.message.reply_text(
+            f"🔬 جاري اختبار {sym} على آخر {days} يوم...\n"
+            f"_(~30-60 ثانية)_",
+            parse_mode="Markdown")
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, lambda: bt_mod.run_backtest(sym, days)
+            )
+            await wait.delete()
+            await u.message.reply_text(
+                bt_mod.fmt_backtest(result),
+                parse_mode="Markdown")
+        except Exception as e:
+            try:
+                await wait.delete()
+            except Exception:
+                pass
+            await u.message.reply_text(f"❌ خطأ: {str(e)[:120]}")
+        return
+
+    # ── طويل BTC (Long-term D1/W1 analysis) ──
+    if text_lower.startswith("طويل") or text_lower.startswith("longterm"):
+        parts = text.split()
+        if len(parts) < 2:
+            await u.message.reply_text(
+                "مثال: `طويل BTC` (تحليل D1/W1 + Bollinger)",
+                parse_mode="Markdown")
+            return
+        sym = parts[1].upper()
+        if not sym.endswith("USDT"):
+            sym += "USDT"
+
+        wait = await u.message.reply_text(
+            f"📈 جاري تحليل {sym} طويل المدى...\n"
+            f"_(~10-15 ثانية)_",
+            parse_mode="Markdown")
+        try:
+            loop = asyncio.get_event_loop()
+            R = await loop.run_in_executor(
+                None, lambda: lt_mod.long_term_analysis(sym)
+            )
+            await wait.delete()
+            await u.message.reply_text(
+                lt_mod.fmt_long_term(R),
+                parse_mode="Markdown",
+                disable_web_page_preview=True)
+        except Exception as e:
+            try:
+                await wait.delete()
+            except Exception:
+                pass
+            await u.message.reply_text(f"❌ خطأ: {str(e)[:120]}")
+        return
+
     # ── تابع ──
     if text.startswith("تابع"):
         parts = text.split()
