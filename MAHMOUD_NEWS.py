@@ -168,12 +168,42 @@ def url_hash(url: str) -> str:
 # Fetch
 # ─────────────────────────────────────────────
 
+# User-Agent عشان نتجنب HTTP 403 من بعض RSS providers
+RSS_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
+
 def fetch_feed(name: str, url: str, max_items: int = 25) -> List[Dict]:
-    """يجلب RSS feed ويرجع list من المقالات"""
+    """يجلب RSS feed ويرجع list من المقالات.
+    يستخدم requests لتمرير User-Agent (تجنب 403)."""
     if not HAS_FEEDPARSER:
         return []
     try:
-        feed = feedparser.parse(url)
+        # ① نجلب الـRSS بالـrequests مع headers صحيحة
+        try:
+            r = requests.get(
+                url,
+                headers={
+                    "User-Agent": RSS_USER_AGENT,
+                    "Accept": "application/rss+xml,application/xml,text/xml,*/*",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+                timeout=15,
+            )
+            if r.status_code != 200:
+                logging.warning(f"RSS [{name}] HTTP {r.status_code}, trying feedparser direct")
+                # fallback لـfeedparser المباشر
+                feed = feedparser.parse(url, agent=RSS_USER_AGENT)
+            else:
+                # ② نمرر المحتوى لـfeedparser
+                feed = feedparser.parse(r.content)
+        except Exception as e:
+            logging.warning(f"RSS [{name}] requests failed: {e} — fallback")
+            feed = feedparser.parse(url, agent=RSS_USER_AGENT)
+
         items = []
         for entry in feed.entries[:max_items]:
             link = entry.get("link", "")
@@ -194,6 +224,10 @@ def fetch_feed(name: str, url: str, max_items: int = 25) -> List[Dict]:
                 "source": name,
                 "published": published,
             })
+        if items:
+            logging.info(f"RSS [{name}]: ✅ {len(items)} items")
+        else:
+            logging.warning(f"RSS [{name}]: 0 items")
         return items
     except Exception as e:
         logging.warning(f"RSS fetch failed for {name}: {e}")
@@ -329,11 +363,12 @@ def process_and_store_news(do_ai: bool = False) -> Tuple[int, List[Dict]]:
 
 
 async def ai_analyze_pending_news(max_items: int = 5,
-                                  min_impact: int = 5) -> int:
+                                  min_impact: int = 5,
+                                  hours: int = 24) -> int:
     """
     Background AI analysis — يحلل الأخبار اللي مفيش لها AI بعد.
-    Async-safe: يستدعي الـAI في thread executor و يضع sleep بين كل تحليل.
-    يرجع عدد الأخبار اللي تم تحليلها.
+    يفضّل Gemini (مجاني وأسرع) ثم Claude ثم OpenAI.
+    Async-safe: timeout 25s/خبر + thread executor.
     """
     try:
         import MAHMOUD_AI as ai_module
@@ -342,29 +377,41 @@ async def ai_analyze_pending_news(max_items: int = 5,
     except Exception:
         return 0
 
-    pending = db.get_news_without_ai(hours=12, limit=max_items)
+    # نختار أفضل AI متاح
+    ai_st = ai_module.ai_status()
+    if ai_st["gemini"]:
+        prefer = "gemini"  # مجاني + سريع
+    elif ai_st["claude"]:
+        prefer = "claude"
+    else:
+        prefer = "openai"
+
+    pending = db.get_news_without_ai(hours=hours, limit=max_items * 2)
     if not pending:
         return 0
 
     analyzed = 0
+    skipped = 0
     loop = asyncio.get_event_loop()
 
     for n in pending:
         if (n.get("impact") or 0) < min_impact:
+            skipped += 1
             continue
+        if analyzed >= max_items:
+            break
         try:
             coins_list = (n.get("coins") or "").split(",") if n.get("coins") else []
             coins_list = [c.strip() for c in coins_list if c.strip()]
-            # Run in thread executor (async-safe)
             result = await asyncio.wait_for(
                 loop.run_in_executor(
                     None,
-                    lambda nn=n, cc=coins_list: ai_module.analyze_news_item(
+                    lambda nn=n, cc=coins_list, p=prefer: ai_module.analyze_news_item(
                         nn["title"], nn.get("summary", ""),
-                        nn.get("source", ""), cc, prefer="claude"
+                        nn.get("source", ""), cc, prefer=p
                     )
                 ),
-                timeout=30
+                timeout=25
             )
             if result.get("ok"):
                 a = result["analysis"]
@@ -402,7 +449,7 @@ def _esc_md(s: str) -> str:
 
 
 def fmt_news_item(item: Dict, idx: Optional[int] = None) -> str:
-    """تنسيق خبر واحد للعرض — نظيف بدون AI (WALL STREET PRO style)"""
+    """تنسيق خبر واحد للعرض — مع AI inline لو متاح"""
     impact = item.get("impact", 0)
     sentiment = item.get("sentiment", "neutral")
     coins = item.get("coins") or ""
@@ -414,7 +461,7 @@ def fmt_news_item(item: Dict, idx: Optional[int] = None) -> str:
     impact_emoji = "🔥" if impact >= 9 else ("⚡" if impact >= 7 else "📰")
 
     prefix = f"*{idx}.* " if idx else ""
-    title = _esc_md(item.get("title", "").strip()[:100])
+    title = _esc_md(item.get("title", "").strip()[:120])
     source = _esc_md(item.get("source", ""))
     url = item.get("url", "")
     coins_tag = "  ".join([f"#{_esc_md(c)}" for c in coins[:3]]) if coins else ""
@@ -423,6 +470,17 @@ def fmt_news_item(item: Dict, idx: Optional[int] = None) -> str:
     if coins_tag:
         msg += f"   {coins_tag}\n"
     msg += f"   📡 _{source}_ • تأثير {impact}/10\n"
+
+    # ✨ AI تحليل inline (لو متوفر)
+    ai_summary = item.get("ai_summary")
+    ai_action = item.get("ai_action")
+    if ai_summary:
+        safe_summary = _esc_md(str(ai_summary)[:250])
+        msg += f"   🧠 *الخلاصة:* {safe_summary}\n"
+    if ai_action:
+        safe_action = _esc_md(str(ai_action).split(chr(10))[0][:200])
+        msg += f"   💡 *التوصية:* {safe_action}\n"
+
     if url:
         safe_url = url.replace(")", "%29")
         msg += f"   [مقال كامل]({safe_url})\n"
@@ -612,9 +670,14 @@ def _quick_ai_analyze(ai_module, news_item: Dict) -> str:
         return ""
 
 
-# الوظيفة القديمة لم تعد مستخدمة، لكن نتركها كـno-op تجنباً لكسر main.py
 async def ai_analysis_job(ctx):
     """
-    Deprecated في v4.5 — الـAI يطبق inline في news_check_job.
+    Background job — يحلل الأخبار pending بـAI كل 5 دقائق.
+    Async-safe: timeout protection + thread executor.
     """
-    pass
+    try:
+        analyzed = await ai_analyze_pending_news(max_items=5, min_impact=5)
+        if analyzed > 0:
+            logging.info(f"[ai_job] analyzed {analyzed} news items")
+    except Exception as e:
+        logging.warning(f"ai_analysis_job error: {e}")

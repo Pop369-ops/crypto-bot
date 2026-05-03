@@ -2116,7 +2116,6 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
                              f"{count} new, {len(breaking)} breaking")
 
                 if count == 0 and existing_count == 0:
-                    # كل الـRSS فشلت — تشخيص مفصل
                     await wait.edit_text(
                         "❌ *فشل جلب الأخبار من كل المصادر*\n\n"
                         "السبب الأرجح: **HTTP 403** من RSS feeds\n"
@@ -2135,6 +2134,27 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
                     f"❌ خطأ في جلب الأخبار:\n`{type(e).__name__}: {str(e)[:120]}`",
                     parse_mode="Markdown")
                 return
+
+        # ✨ AI تحليل سريع للأخبار pending (لو AI متاح)
+        if ai_mod.has_any_ai():
+            unanalyzed = db.get_news_without_ai(hours=24, limit=8)
+            if unanalyzed:
+                wait_ai = await u.message.reply_text(
+                    f"🧠 جاري تحليل {len(unanalyzed)} خبر بـAI...\n"
+                    f"_(~{len(unanalyzed) * 5} ثانية)_",
+                    parse_mode="Markdown")
+                try:
+                    analyzed = await news_mod.ai_analyze_pending_news(
+                        max_items=8, min_impact=5)
+                    await wait_ai.delete()
+                    logging.info(f"On-demand AI: analyzed {analyzed}")
+                except Exception as e:
+                    await wait_ai.edit_text(f"⚠️ AI خطأ: {str(e)[:80]}\n_عرض الأخبار بدون تحليل_")
+                    await asyncio.sleep(2)
+                    try:
+                        await wait_ai.delete()
+                    except Exception:
+                        pass
 
         await u.message.reply_text(
             news_mod.get_news_msg(hours=24, limit=10),
@@ -2376,7 +2396,6 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
 
     # ── عاجل (الأخبار العالية التأثير فقط) ──
     if text in ("عاجل", "breaking"):
-        # fetch لو DB فاضي
         existing = db.get_recent_news(hours=24, limit=1)
         if not existing:
             wait = await u.message.reply_text(
@@ -2390,6 +2409,24 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await wait.edit_text(f"❌ {str(e)[:100]}")
                 return
+
+        # AI تحليل سريع للأخبار العاجلة pending
+        if ai_mod.has_any_ai():
+            unanalyzed = db.get_news_without_ai(hours=12, limit=8)
+            urgent_unanalyzed = [n for n in unanalyzed if (n.get("impact") or 0) >= 7]
+            if urgent_unanalyzed:
+                wait_ai = await u.message.reply_text(
+                    f"🧠 تحليل {len(urgent_unanalyzed)} خبر عاجل بـAI...",
+                    parse_mode="Markdown")
+                try:
+                    await news_mod.ai_analyze_pending_news(
+                        max_items=8, min_impact=7)
+                    await wait_ai.delete()
+                except Exception:
+                    try:
+                        await wait_ai.delete()
+                    except Exception:
+                        pass
 
         await u.message.reply_text(
             news_mod.get_news_msg(hours=12, min_impact=7, limit=10),
@@ -3394,6 +3431,14 @@ def main():
         interval=900,
         first=10,  # أول دورة بعد 10 ثواني (سريع)
         name="news_check",
+    )
+
+    # ③b تحليل AI للأخبار في الخلفية (كل 3 دقائق — يحلل 5 أخبار/دورة)
+    app.job_queue.run_repeating(
+        news_mod.ai_analysis_job,
+        interval=180,
+        first=45,  # بعد 45 ثانية من البداية
+        name="ai_analysis",
     )
 
     # ④ Whale Alert كل 10 دقائق (لو الـAPI key متاح)
