@@ -466,16 +466,50 @@ def _esc_md(s: str) -> str:
 
 
 def fmt_news_item(item: Dict, idx: Optional[int] = None) -> str:
-    """تنسيق خبر واحد للعرض — clean بدون AI (للسرعة، AI on-demand)"""
+    """
+    تنسيق خبر واحد مع visual markers قوية للأخبار عالية التأثير:
+    • 9-10/10 = 🚨 CRITICAL (إطار + emoji قوي + نجمة)
+    • 8/10    = 🔥 VERY HIGH
+    • 7/10    = ⚡ HIGH
+    • 5-6/10  = 📰 MEDIUM
+    • <5/10   = 📄 LOW
+    """
     impact = item.get("impact", 0)
     sentiment = item.get("sentiment", "neutral")
     coins = item.get("coins") or ""
     if isinstance(coins, str):
         coins = coins.split(",") if coins else []
 
+    # Sentiment emojis
     s_emoji = {"bullish": "🟢", "bearish": "🔴",
                "neutral": "⚪"}.get(sentiment, "⚪")
-    impact_emoji = "🔥" if impact >= 9 else ("⚡" if impact >= 7 else "📰")
+
+    # Impact tier - تصميم متعدد الطبقات
+    if impact >= 9:
+        impact_emoji = "🚨"
+        impact_label = "*CRITICAL*"
+        prefix_tag = "🔴🔴🔴"
+        suffix_tag = "  ⭐"
+    elif impact >= 8:
+        impact_emoji = "🔥"
+        impact_label = "*VERY HIGH*"
+        prefix_tag = "🔴🔴"
+        suffix_tag = "  ⭐"
+    elif impact >= 7:
+        impact_emoji = "⚡"
+        impact_label = "*HIGH*"
+        prefix_tag = "🟠"
+        suffix_tag = ""
+    elif impact >= 5:
+        impact_emoji = "📰"
+        impact_label = ""
+        prefix_tag = ""
+        suffix_tag = ""
+    else:
+        impact_emoji = "📄"
+        impact_label = ""
+        prefix_tag = ""
+        suffix_tag = ""
 
     prefix = f"*{idx}.* " if idx else ""
     title = _esc_md(item.get("title", "").strip()[:120])
@@ -483,10 +517,24 @@ def fmt_news_item(item: Dict, idx: Optional[int] = None) -> str:
     url = item.get("url", "")
     coins_tag = "  ".join([f"#{_esc_md(c)}" for c in coins[:3]]) if coins else ""
 
-    msg = f"{prefix}{impact_emoji} {s_emoji} {title}\n"
+    # للأخبار CRITICAL/VERY HIGH: إطار بصري واضح
+    if impact >= 8:
+        msg = f"{prefix_tag} {prefix}{impact_emoji} {s_emoji} *{title}*{suffix_tag}\n"
+    else:
+        msg = f"{prefix}{impact_emoji} {s_emoji} {title}\n"
+
     if coins_tag:
         msg += f"   {coins_tag}\n"
-    msg += f"   📡 _{source}_ • تأثير {impact}/10\n"
+
+    # سطر التأثير - أوضح للأهم
+    if impact >= 9:
+        msg += f"   🚨 {impact_label} • تأثير `{impact}/10` • _{source}_\n"
+    elif impact >= 8:
+        msg += f"   🔥 {impact_label} • تأثير `{impact}/10` • _{source}_\n"
+    elif impact >= 7:
+        msg += f"   ⚡ {impact_label} • تأثير `{impact}/10` • _{source}_\n"
+    else:
+        msg += f"   📡 _{source}_ • تأثير {impact}/10\n"
 
     if url:
         safe_url = url.replace(")", "%29")
@@ -502,19 +550,41 @@ def get_news_msg(coin: Optional[str] = None, hours: int = 24,
         scope = f"على {coin}" if coin else "في الفترة دي"
         return f"📰 لا توجد أخبار {scope} بهذا التأثير\n\nجرّب: `أخبار` (بدون فلتر)"
 
+    # نحسب توزيع التأثير
+    critical_count = sum(1 for it in items if it.get("impact", 0) >= 9)
+    very_high_count = sum(1 for it in items if it.get("impact", 0) == 8)
+    high_count = sum(1 for it in items if it.get("impact", 0) == 7)
+
     title = "🔥 *عاجل*" if min_impact >= 7 else "📰 *أحدث الأخبار*"
     if coin:
         title += f" — {coin.upper()}"
-    msg = f"{title}  _(آخر {hours}h)_\n\n"
+    msg = f"{title}  _(آخر {hours}h)_\n"
+
+    # Header alert لو فيه أخبار CRITICAL
+    if critical_count > 0:
+        msg += f"\n🚨🚨🚨 *تنبيه: {critical_count} خبر CRITICAL* 🚨🚨🚨\n"
+        msg += "_⚠️ يجب الانتباه قبل اتخاذ أي قرار_\n"
+    elif very_high_count > 0:
+        msg += f"\n🔥 *{very_high_count} خبر VERY HIGH impact*\n"
+    elif high_count > 0:
+        msg += f"\n⚡ *{high_count} خبر HIGH impact*\n"
+
+    msg += "\n"
+
     for i, it in enumerate(items, 1):
         msg += fmt_news_item(it, i) + "\n"
 
-    # Footer: زر التحليل لأي خبر بالرقم (نفس فكرة news_crypto_bot)
+    # Footer
     msg += "━━━━━━━━━━━━━━━━━━\n"
+    msg += "🎯 *دليل الألوان:*\n"
+    msg += "🚨 CRITICAL (9-10) → فعل فوراً\n"
+    msg += "🔥 VERY HIGH (8) → راقب بعناية\n"
+    msg += "⚡ HIGH (7) → مهم\n"
+    msg += "📰 MEDIUM (5-6) → معلوماتي\n\n"
     msg += "💡 *للتحليل العميق:*\n"
-    msg += "أرسل: `حلل 1` أو `حلل 5` (رقم الخبر)\n"
-    msg += "`ملخص` = تقرير شامل لكل الأخبار\n"
-    msg += "`sentiment` = مزاج السوق العام"
+    msg += "`حلل 1` — AI لخبر بالرقم\n"
+    msg += "`ملخص` — تقرير شامل\n"
+    msg += "`sentiment` — مزاج السوق"
     return msg
 
 
