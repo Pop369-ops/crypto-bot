@@ -466,7 +466,7 @@ def _esc_md(s: str) -> str:
 
 
 def fmt_news_item(item: Dict, idx: Optional[int] = None) -> str:
-    """تنسيق خبر واحد للعرض — مع AI inline لو متاح"""
+    """تنسيق خبر واحد للعرض — clean بدون AI (للسرعة، AI on-demand)"""
     impact = item.get("impact", 0)
     sentiment = item.get("sentiment", "neutral")
     coins = item.get("coins") or ""
@@ -488,16 +488,6 @@ def fmt_news_item(item: Dict, idx: Optional[int] = None) -> str:
         msg += f"   {coins_tag}\n"
     msg += f"   📡 _{source}_ • تأثير {impact}/10\n"
 
-    # ✨ AI تحليل inline (لو متوفر)
-    ai_summary = item.get("ai_summary")
-    ai_action = item.get("ai_action")
-    if ai_summary:
-        safe_summary = _esc_md(str(ai_summary)[:250])
-        msg += f"   🧠 *الخلاصة:* {safe_summary}\n"
-    if ai_action:
-        safe_action = _esc_md(str(ai_action).split(chr(10))[0][:200])
-        msg += f"   💡 *التوصية:* {safe_action}\n"
-
     if url:
         safe_url = url.replace(")", "%29")
         msg += f"   [مقال كامل]({safe_url})\n"
@@ -518,6 +508,13 @@ def get_news_msg(coin: Optional[str] = None, hours: int = 24,
     msg = f"{title}  _(آخر {hours}h)_\n\n"
     for i, it in enumerate(items, 1):
         msg += fmt_news_item(it, i) + "\n"
+
+    # Footer: زر التحليل لأي خبر بالرقم (نفس فكرة news_crypto_bot)
+    msg += "━━━━━━━━━━━━━━━━━━\n"
+    msg += "💡 *للتحليل العميق:*\n"
+    msg += "أرسل: `حلل 1` أو `حلل 5` (رقم الخبر)\n"
+    msg += "`ملخص` = تقرير شامل لكل الأخبار\n"
+    msg += "`sentiment` = مزاج السوق العام"
     return msg
 
 

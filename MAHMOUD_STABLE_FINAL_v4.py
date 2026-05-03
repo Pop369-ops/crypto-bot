@@ -1882,21 +1882,23 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
         "📈 *تحليل فوري:*\n"
         "أرسل: `BTC` / `ETH` / `SOL` / أي عملة\n"
         "`تابع BTC` — تنبيه عند الإشارات القوية ≥12/15\n\n"
-        "🧠 *AI Multi-Brain:*\n"
-        "`اجماع BTC` — تحليل بـ3 AIs + إجماع\n"
-        "`سؤال [نصك]` — اسأل أي شيء\n"
-        "`حلل_خبر BTC` — AI يحلل آخر خبر BTC ⭐\n"
-        "`حلل_خبر 1` — AI يحلل خبر بالرقم\n"
-        "`ملخص_يوم` — تقرير AI يومي شامل ⭐\n"
-        "_💡 الأخبار العاجلة (7+) تجي مع AI تلقائياً_\n\n"
         "━━━━━━━━━━━━━━━━\n"
-        "📰 *الأخبار + التقويم:*\n"
-        "`أخبار` — آخر 24h | `أخبار BTC` | `عاجل`\n"
-        "_الأخبار العاجلة (8+) تجي مع تحليل AI تلقائي 🤖_\n"
+        "📰 *الأخبار:*\n"
+        "`أخبار` — آخر 10 أخبار مرقمة (سريع)\n"
+        "`أخبار BTC` — أخبار عملة معينة\n"
+        "`عاجل` — أخبار high-impact فقط\n\n"
+        "🧠 *AI تحليل (بالطلب):*\n"
+        "`حلل 1` — AI يحلل خبر #1 (تحليل عميق)\n"
+        "`حلل 5` — أي رقم من القائمة\n"
+        "`ملخص` — تقرير AI شامل لكل أخبار اليوم ⭐\n"
+        "`sentiment` — مزاج السوق العام (سريع)\n"
+        "`اجماع BTC` — 3 AIs لعملة معينة\n"
+        "`سؤال [نصك]` — اسأل AI أي شيء\n\n"
+        "📅 *التقويم + Macro:*\n"
         "`تقويم` — أحداث اليوم Macro\n"
         "`تقويم_اسبوع` — كل الأسبوع\n"
         "`ماكرو` — CPI/Yields/توقعات (Massive.com)\n"
-        "`اشترك_اخبار` — تنبيهات فورية\n"
+        "`اشترك_اخبار` — تنبيهات فورية للعاجل\n"
         "`اشترك_تقرير 8 0` — تقرير 8 ص\n"
         "`فلتر_عملات BTC,ETH`\n\n"
         "🎯 *Today's View:*\n"
@@ -2096,16 +2098,12 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
     # 📰 الأخبار + التقويم + Today's View (الموجة 1)
     # ═══════════════════════════════════════════
 
-    # ── أخبار / أخبار BTC ──
+    # ── أخبار / أخبار BTC (سريع، بدون AI تلقائي) ──
     if text in ("أخبار", "اخبار", "news"):
-        existing = db.get_recent_news(hours=24, limit=1)
-
-        # دائماً نحاول fetch جديد لو الـDB فيه أقل من 5 أخبار
         existing_count = len(db.get_recent_news(hours=24, limit=5))
         if existing_count < 5:
             wait = await u.message.reply_text(
-                f"📡 جاري جلب الأخبار من 9 مصادر...\n"
-                f"_(موجود حالياً: {existing_count} خبر)_",
+                f"📡 جاري جلب الأخبار من 9 مصادر...",
                 parse_mode="Markdown")
             try:
                 loop = asyncio.get_event_loop()
@@ -2118,43 +2116,20 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
                 if count == 0 and existing_count == 0:
                     await wait.edit_text(
                         "❌ *فشل جلب الأخبار من كل المصادر*\n\n"
-                        "السبب الأرجح: **HTTP 403** من RSS feeds\n"
-                        "(مواقع الأخبار تـblock الـserver IP)\n\n"
+                        "السبب الأرجح: **HTTP 403** من RSS feeds\n\n"
                         "🔧 الحلول:\n"
-                        "• شوف Railway Deploy Logs لرسائل `RSS [...]: 403`\n"
-                        "• استخدم `صحة` لتشخيص شامل\n"
-                        "• جرب Massive News (لو عندك `MASSIVE_API_KEY`)\n"
-                        "• أو غيّر Railway Region (US ⇄ EU)",
+                        "• `صحة` لتشخيص شامل\n"
+                        "• `rss` لاختبار كل feed\n"
+                        "• تأكد من `MASSIVE_API_KEY`",
                         parse_mode="Markdown")
                     return
                 else:
                     await wait.delete()
             except Exception as e:
                 await wait.edit_text(
-                    f"❌ خطأ في جلب الأخبار:\n`{type(e).__name__}: {str(e)[:120]}`",
+                    f"❌ خطأ:\n`{type(e).__name__}: {str(e)[:120]}`",
                     parse_mode="Markdown")
                 return
-
-        # ✨ AI تحليل سريع للأخبار pending (لو AI متاح)
-        if ai_mod.has_any_ai():
-            unanalyzed = db.get_news_without_ai(hours=24, limit=8)
-            if unanalyzed:
-                wait_ai = await u.message.reply_text(
-                    f"🧠 جاري تحليل {len(unanalyzed)} خبر بـAI...\n"
-                    f"_(~{len(unanalyzed) * 5} ثانية)_",
-                    parse_mode="Markdown")
-                try:
-                    analyzed = await news_mod.ai_analyze_pending_news(
-                        max_items=8, min_impact=5)
-                    await wait_ai.delete()
-                    logging.info(f"On-demand AI: analyzed {analyzed}")
-                except Exception as e:
-                    await wait_ai.edit_text(f"⚠️ AI خطأ: {str(e)[:80]}\n_عرض الأخبار بدون تحليل_")
-                    await asyncio.sleep(2)
-                    try:
-                        await wait_ai.delete()
-                    except Exception:
-                        pass
 
         await u.message.reply_text(
             news_mod.get_news_msg(hours=24, limit=10),
@@ -2394,7 +2369,7 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
         await u.message.reply_text("\n".join(report))
         return
 
-    # ── عاجل (الأخبار العالية التأثير فقط) ──
+    # ── عاجل (الأخبار العالية التأثير فقط — سريع، بدون AI تلقائي) ──
     if text in ("عاجل", "breaking"):
         existing = db.get_recent_news(hours=24, limit=1)
         if not existing:
@@ -2409,24 +2384,6 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await wait.edit_text(f"❌ {str(e)[:100]}")
                 return
-
-        # AI تحليل سريع للأخبار العاجلة pending
-        if ai_mod.has_any_ai():
-            unanalyzed = db.get_news_without_ai(hours=12, limit=8)
-            urgent_unanalyzed = [n for n in unanalyzed if (n.get("impact") or 0) >= 7]
-            if urgent_unanalyzed:
-                wait_ai = await u.message.reply_text(
-                    f"🧠 تحليل {len(urgent_unanalyzed)} خبر عاجل بـAI...",
-                    parse_mode="Markdown")
-                try:
-                    await news_mod.ai_analyze_pending_news(
-                        max_items=8, min_impact=7)
-                    await wait_ai.delete()
-                except Exception:
-                    try:
-                        await wait_ai.delete()
-                    except Exception:
-                        pass
 
         await u.message.reply_text(
             news_mod.get_news_msg(hours=12, min_impact=7, limit=10),
@@ -2477,6 +2434,214 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
         return
 
     # ── تحليل AI لخبر معين ──
+    # ── حلل [رقم] — أمر سريع لتحليل خبر بالرقم (مثل /council [num] في news_crypto_bot) ──
+    if text_lower.startswith("حلل ") or text_lower.startswith("/حلل") \
+       or text_lower in ("حلل", "/analyze"):
+        if not ai_mod.has_any_ai():
+            await u.message.reply_text(
+                "❌ AI غير مفعّل\n\n"
+                "أضف على الأقل واحد من:\n"
+                "• GEMINI_API_KEY (مجاني — https://aistudio.google.com/apikey)\n"
+                "• CLAUDE_API_KEY\n"
+                "• OPENAI_API_KEY"
+            )
+            return
+
+        parts = text.split()
+        idx = None
+        if len(parts) >= 2:
+            try:
+                idx = int(parts[1])
+            except ValueError:
+                pass
+
+        # نجلب الأخبار بنفس ترتيب أمر `أخبار` بالظبط
+        items = db.get_recent_news(hours=24, min_impact=0, limit=10)
+        if not items:
+            await u.message.reply_text(
+                "⚠️ ما فيش أخبار — جرب `أخبار` أولاً")
+            return
+
+        if idx is None or idx < 1 or idx > len(items):
+            preview = "\n".join([
+                f"{i+1}. {it['title'][:60]}..."
+                for i, it in enumerate(items[:5])
+            ])
+            await u.message.reply_text(
+                f"📋 *الأرقام المتاحة (1-{len(items)}):*\n\n"
+                f"```\n{preview}\n```\n\n"
+                f"الاستخدام:\n"
+                f"`حلل 1` — تحليل خبر رقم 1\n"
+                f"`حلل 5` — تحليل خبر رقم 5",
+                parse_mode="Markdown")
+            return
+
+        item = items[idx - 1]
+        wait = await u.message.reply_text(
+            f"🧠 AI يحلل خبر #{idx}...\n_(~10 ثواني)_",
+            parse_mode="Markdown")
+
+        try:
+            coins_list = (item.get("coins") or "").split(",") if item.get("coins") else []
+            coins_list = [c.strip() for c in coins_list if c.strip()]
+
+            # نختار أفضل AI (Gemini أسرع وأرخص)
+            ai_st = ai_mod.ai_status()
+            prefer = "gemini" if ai_st["gemini"] else (
+                "claude" if ai_st["claude"] else "openai")
+
+            loop = asyncio.get_event_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: ai_mod.analyze_news_item(
+                        item["title"], item.get("summary", ""),
+                        item.get("source", ""), coins_list,
+                        prefer=prefer
+                    )
+                ),
+                timeout=30
+            )
+
+            await wait.delete()
+
+            if not result.get("ok"):
+                err = result.get("error", "unknown")
+                detail = result.get("detail", "")[:100]
+                await u.message.reply_text(
+                    f"❌ فشل التحليل\n"
+                    f"النوع: `{err}`\n"
+                    f"التفاصيل: `{detail}`\n\n"
+                    f"جرّب: `صحة` لاختبار AI",
+                    parse_mode="Markdown")
+                return
+
+            msg = ai_mod.fmt_news_analysis(
+                item["title"], result["analysis"], item.get("url", ""))
+            await u.message.reply_text(
+                msg, parse_mode="Markdown", disable_web_page_preview=True)
+        except asyncio.TimeoutError:
+            try:
+                await wait.delete()
+            except Exception:
+                pass
+            await u.message.reply_text("⏱ AI تأخر — جرب مرة أخرى")
+        except Exception as e:
+            try:
+                await wait.delete()
+            except Exception:
+                pass
+            await u.message.reply_text(f"❌ خطأ: {type(e).__name__}: {str(e)[:120]}")
+        return
+
+    # ── ملخص — تقرير AI شامل لكل أخبار اليوم ──
+    if text in ("ملخص", "ملخص اليوم", "ملخص_يوم", "تقرير", "digest", "/digest"):
+        if not ai_mod.has_any_ai():
+            await u.message.reply_text(
+                "❌ AI غير مفعّل\n"
+                "أضف `GEMINI_API_KEY` (مجاني)")
+            return
+
+        items = db.get_recent_news(hours=24, min_impact=5, limit=15)
+        if not items:
+            await u.message.reply_text("⚠️ ما فيش أخبار — جرب `أخبار` أولاً")
+            return
+
+        wait = await u.message.reply_text(
+            f"🧠 AI يولد ملخص شامل لـ{len(items)} خبر...\n"
+            f"_(~20 ثانية)_",
+            parse_mode="Markdown")
+
+        try:
+            catalysts = []
+            try:
+                catalysts = cal_mod.get_top_catalysts(5)
+            except Exception:
+                pass
+
+            ai_st = ai_mod.ai_status()
+            prefer = "gemini" if ai_st["gemini"] else (
+                "claude" if ai_st["claude"] else "openai")
+
+            loop = asyncio.get_event_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: ai_mod.daily_brief(items, catalysts, prefer=prefer)
+                ),
+                timeout=45
+            )
+
+            await wait.delete()
+
+            if not result.get("ok"):
+                err = result.get("error", "unknown")
+                await u.message.reply_text(
+                    f"❌ فشل الملخص: `{err}`",
+                    parse_mode="Markdown")
+                return
+
+            msg = ai_mod.fmt_daily_brief(result)
+            await u.message.reply_text(msg, parse_mode="Markdown")
+        except asyncio.TimeoutError:
+            try:
+                await wait.delete()
+            except Exception:
+                pass
+            await u.message.reply_text("⏱ AI تأخر — جرب مرة أخرى")
+        except Exception as e:
+            try:
+                await wait.delete()
+            except Exception:
+                pass
+            await u.message.reply_text(f"❌ خطأ: {str(e)[:120]}")
+        return
+
+    # ── sentiment — مزاج السوق العام (سريع، AI خفيف) ──
+    if text_lower in ("sentiment", "مزاج", "مزاج_السوق", "/sentiment"):
+        if not ai_mod.has_any_ai():
+            await u.message.reply_text("❌ AI غير مفعّل")
+            return
+
+        items = db.get_recent_news(hours=12, min_impact=4, limit=20)
+        if not items:
+            await u.message.reply_text("⚠️ ما فيش أخبار كافية للتحليل")
+            return
+
+        # نحسب الـsentiment بدون AI أولاً (احصاء سريع من DB)
+        bullish = sum(1 for it in items if it.get("sentiment") == "bullish")
+        bearish = sum(1 for it in items if it.get("sentiment") == "bearish")
+        neutral = sum(1 for it in items if it.get("sentiment") == "neutral")
+        total = len(items)
+        avg_impact = sum(it.get("impact", 0) for it in items) / total if total else 0
+
+        # الـmood العام
+        if bullish > bearish * 2:
+            mood = "🟢 *Risk-On قوي* (شهية مخاطرة عالية)"
+        elif bullish > bearish:
+            mood = "🟢 *Risk-On معتدل*"
+        elif bearish > bullish * 2:
+            mood = "🔴 *Risk-Off قوي* (هروب للأمان)"
+        elif bearish > bullish:
+            mood = "🔴 *Risk-Off معتدل*"
+        else:
+            mood = "🟡 *Mixed* (مختلط)"
+
+        msg = "📊 *مزاج السوق — آخر 12 ساعة*\n\n"
+        msg += f"{mood}\n\n"
+        msg += f"📈 إيجابي: *{bullish}* خبر ({bullish*100//total}%)\n"
+        msg += f"📉 سلبي: *{bearish}* خبر ({bearish*100//total}%)\n"
+        msg += f"⚪ محايد: *{neutral}* خبر ({neutral*100//total}%)\n\n"
+        msg += f"🌡️ متوسط التأثير: *{avg_impact:.1f}/10*\n"
+        msg += f"📰 إجمالي: {total} خبر\n\n"
+        msg += "━━━━━━━━━━━━━━━━━\n"
+        msg += "`أخبار` للقائمة الكاملة\n"
+        msg += "`ملخص` لتحليل AI شامل\n"
+        msg += "`حلل [رقم]` لخبر معين"
+
+        await u.message.reply_text(msg, parse_mode="Markdown")
+        return
+
     if text_lower.startswith("حلل_خبر") or text_lower.startswith("حلل خبر"):
         if not ai_mod.has_any_ai():
             await u.message.reply_text(
