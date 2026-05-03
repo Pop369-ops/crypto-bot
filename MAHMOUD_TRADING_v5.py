@@ -50,6 +50,7 @@ import MAHMOUD_RISK as risk
 # ── موديولات v5 — TRADING ONLY ──
 import MAHMOUD_LIQUIDITY as liq_mod
 import MAHMOUD_AI_TRADING as ai_trade
+import MAHMOUD_OPTIONS as opt_mod
 import MAHMOUD_WHALE as whale_mod
 import MAHMOUD_BACKTEST as bt_mod
 import MAHMOUD_LONGTERM as lt_mod
@@ -1973,6 +1974,13 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
         "📈 *Long-term:*\n"
         "`طويل BTC` — تحليل D1/W1 للـHodlers\n\n"
         "━━━━━━━━━━━━━━━━\n"
+        "💎 *Options Suite (Greeks):*\n"
+        "`خيارات BTC` — Overview + IV + Max Pain + Top OI ⭐\n"
+        "`greeks BTC 45000 30 call` — Greeks لعقد محدد\n"
+        "`استراتيجية BTC bullish` — اقتراح استراتيجية\n"
+        "`maxpain BTC` — Max Pain تفصيلي\n"
+        "_العملات المدعومة: BTC, ETH, SOL_\n\n"
+        "━━━━━━━━━━━━━━━━\n"
         "🏥 *تشخيص:*\n"
         "`صحة` — فحص شامل لكل المكونات\n\n"
         "⚠️ _تحليلات تعليمية — البوت لا يفتح صفقات تلقائياً_",
@@ -2177,6 +2185,7 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
         # ③ Modules (TRADING ONLY)
         mods = [
             ("liquidity", liq_mod), ("ai_trading", ai_trade),
+            ("options", opt_mod),
             ("whale", whale_mod), ("backtest", bt_mod),
             ("longterm", lt_mod), ("signals", signals),
             ("tracker", tracker), ("risk", risk),
@@ -2382,6 +2391,232 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
             await u.message.reply_text(f"❌ خطأ: {str(e)[:120]}")
+        return
+
+    # ═══════════════════════════════════════════
+    # 💎 Options Suite (v5.1) — Greeks + Strategies
+    # ═══════════════════════════════════════════
+
+    # ── خيارات BTC / options BTC ──
+    if text_lower.startswith("خيارات") or text_lower.startswith("options"):
+        parts = text.split()
+        if len(parts) < 2:
+            await u.message.reply_text(
+                "مثال: `خيارات BTC` (Overview)\n"
+                "أو: `خيارات ETH`\n\n"
+                "العملات المدعومة: BTC, ETH, SOL",
+                parse_mode="Markdown")
+            return
+        cur = parts[1].upper().replace("USDT", "")
+
+        wait = await u.message.reply_text(
+            f"📊 جاري جلب options chain لـ{cur}...\n"
+            f"_(~10-15 ثانية)_",
+            parse_mode="Markdown")
+        try:
+            loop = asyncio.get_event_loop()
+            chain = await loop.run_in_executor(
+                None, lambda: opt_mod.get_options_chain(cur)
+            )
+            await wait.delete()
+
+            msg = opt_mod.fmt_options_overview(chain, top_n=5)
+            await u.message.reply_text(msg, parse_mode="Markdown")
+        except Exception as e:
+            try:
+                await wait.delete()
+            except Exception:
+                pass
+            await u.message.reply_text(f"❌ خطأ: {type(e).__name__}: {str(e)[:120]}")
+        return
+
+    # ── greeks BTC 45000 30 call ──
+    if text_lower.startswith("greeks "):
+        parts = text.split()
+        if len(parts) < 5:
+            await u.message.reply_text(
+                "*استخدام:*\n"
+                "`greeks BTC 45000 30 call`\n"
+                "          ↑    ↑    ↑    ↑\n"
+                "        عملة strike  أيام  call/put\n\n"
+                "*مثال:* `greeks BTC 50000 7 put`",
+                parse_mode="Markdown")
+            return
+
+        try:
+            cur = parts[1].upper().replace("USDT", "")
+            strike = float(parts[2])
+            days = int(parts[3])
+            opt_type = parts[4].lower()
+            if opt_type not in ("call", "put"):
+                raise ValueError("type must be call or put")
+        except (ValueError, IndexError) as e:
+            await u.message.reply_text(f"❌ خطأ في القراءة: {str(e)[:80]}")
+            return
+
+        wait = await u.message.reply_text(
+            f"📊 جاري حساب Greeks لـ{cur} ${strike} {opt_type.upper()} ({days}D)...",
+            parse_mode="Markdown")
+
+        try:
+            loop = asyncio.get_event_loop()
+
+            # نجلب الـchain للحصول على spot price و IV
+            chain = await loop.run_in_executor(
+                None, lambda: opt_mod.get_options_chain(cur)
+            )
+
+            if not chain.get("ok"):
+                await wait.edit_text(f"❌ {chain.get('error', 'فشل جلب البيانات')}")
+                return
+
+            spot = chain["spot_price"]
+
+            # نبحث عن الـIV من chain لو متاح
+            iv_to_use = 0.65  # default fallback
+            options_list = chain["calls"] if opt_type == "call" else chain["puts"]
+            closest = min(options_list,
+                          key=lambda x: abs(x["strike"] - strike) + abs(x["expiry"] != "" and 0))
+            if closest:
+                iv_to_use = closest["iv"]
+
+            # نحسب Greeks
+            T = days / 365
+            greeks = opt_mod.black_scholes_greeks(
+                S=spot, K=strike, T=T,
+                sigma=iv_to_use, option_type=opt_type
+            )
+
+            await wait.delete()
+
+            msg = opt_mod.fmt_greeks(
+                symbol=cur, strike=strike, expiry_days=days,
+                option_type=opt_type, greeks_data=greeks,
+                spot=spot, iv=iv_to_use
+            )
+            await u.message.reply_text(msg, parse_mode="Markdown")
+        except Exception as e:
+            try:
+                await wait.delete()
+            except Exception:
+                pass
+            await u.message.reply_text(f"❌ خطأ: {type(e).__name__}: {str(e)[:120]}")
+        return
+
+    # ── استراتيجية BTC bullish ──
+    if text_lower.startswith("استراتيجية") or text_lower.startswith("strategy "):
+        parts = text.split()
+        if len(parts) < 3:
+            await u.message.reply_text(
+                "*استخدام:*\n"
+                "`استراتيجية BTC bullish` — صاعد\n"
+                "`استراتيجية BTC bearish` — هابط\n"
+                "`استراتيجية BTC neutral` — محايد (Iron Condor)\n"
+                "`استراتيجية BTC volatile` — تذبذب قوي (Straddle)",
+                parse_mode="Markdown")
+            return
+
+        cur = parts[1].upper().replace("USDT", "")
+        outlook_input = parts[2].lower()
+
+        # نحوّل الـoutlook العربي للإنجليزي
+        outlook_map = {
+            "صاعد": "bullish", "bullish": "bullish",
+            "هابط": "bearish", "bearish": "bearish",
+            "محايد": "neutral", "neutral": "neutral",
+            "متقلب": "volatile", "تذبذب": "volatile",
+            "volatile": "volatile",
+        }
+        outlook = outlook_map.get(outlook_input, "neutral")
+
+        wait = await u.message.reply_text(
+            f"💡 جاري بناء استراتيجيات {cur} ({outlook})...",
+            parse_mode="Markdown")
+
+        try:
+            loop = asyncio.get_event_loop()
+            chain = await loop.run_in_executor(
+                None, lambda: opt_mod.get_options_chain(cur)
+            )
+
+            if not chain.get("ok"):
+                await wait.edit_text(f"❌ {chain.get('error', 'failed')}")
+                return
+
+            rec = opt_mod.recommend_strategy(chain, outlook=outlook)
+            await wait.delete()
+
+            msg = opt_mod.fmt_recommendations(rec)
+            await u.message.reply_text(msg, parse_mode="Markdown")
+        except Exception as e:
+            try:
+                await wait.delete()
+            except Exception:
+                pass
+            await u.message.reply_text(f"❌ خطأ: {type(e).__name__}: {str(e)[:120]}")
+        return
+
+    # ── maxpain BTC ──
+    if text_lower.startswith("maxpain"):
+        parts = text.split()
+        if len(parts) < 2:
+            await u.message.reply_text(
+                "مثال: `maxpain BTC`",
+                parse_mode="Markdown")
+            return
+        cur = parts[1].upper().replace("USDT", "")
+
+        wait = await u.message.reply_text(
+            f"🎯 جاري حساب Max Pain لـ{cur}...",
+            parse_mode="Markdown")
+        try:
+            loop = asyncio.get_event_loop()
+            chain = await loop.run_in_executor(
+                None, lambda: opt_mod.get_options_chain(cur)
+            )
+
+            if not chain.get("ok"):
+                await wait.edit_text(f"❌ {chain.get('error', 'failed')}")
+                return
+
+            mp = opt_mod.calc_max_pain(chain)
+            await wait.delete()
+
+            if not mp.get("max_pain"):
+                await u.message.reply_text(f"❌ ما قدرت أحسب Max Pain لـ{cur}")
+                return
+
+            spot = mp["spot"]
+            mp_price = mp["max_pain"]
+            dist = mp["distance_pct"]
+            direction = mp["direction"]
+
+            msg = f"🎯 *Max Pain — {cur}*\n"
+            msg += f"━━━━━━━━━━━━━━━━━━\n"
+            msg += f"💰 السعر الحالي: `${spot:,.2f}`\n"
+            msg += f"🎯 Max Pain: `${mp_price:,.2f}`\n"
+            msg += f"📐 المسافة: {dist:+.2f}% ({direction})\n\n"
+            msg += "💡 *ما هو Max Pain؟*\n"
+            msg += "هو السعر الذي يجعل أكبر عدد من Options "
+            msg += "تنتهي *worthless* (بدون قيمة) عند الـExpiry.\n\n"
+            msg += "📊 *التفسير:*\n"
+            if abs(dist) < 1:
+                msg += "• السعر قريب من Max Pain — السوق متوازن\n"
+            elif dist > 0:
+                msg += f"• السوق قد يميل للارتفاع نحو ${mp_price:,.0f}\n"
+                msg += "• Market Makers يفضلون السعر يصل هناك\n"
+            else:
+                msg += f"• السوق قد يميل للانخفاض نحو ${mp_price:,.0f}\n"
+                msg += "• Market Makers يفضلون السعر يصل هناك\n"
+            msg += "\n⚠️ _Max Pain مؤشر تأثير جزئي - ليس قاعدة مطلقة_"
+
+            await u.message.reply_text(msg, parse_mode="Markdown")
+        except Exception as e:
+            try:
+                await wait.delete()
+            except Exception:
+                pass
+            await u.message.reply_text(f"❌ خطأ: {type(e).__name__}: {str(e)[:120]}")
         return
 
     # ── تابع ──
