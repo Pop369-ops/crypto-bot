@@ -2098,6 +2098,44 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
 
     # ── أخبار / أخبار BTC ──
     if text in ("أخبار", "اخبار", "news"):
+        existing = db.get_recent_news(hours=24, limit=1)
+
+        # دائماً نحاول fetch جديد لو الـDB فيه أقل من 5 أخبار
+        existing_count = len(db.get_recent_news(hours=24, limit=5))
+        if existing_count < 5:
+            wait = await u.message.reply_text(
+                f"📡 جاري جلب الأخبار من 9 مصادر...\n"
+                f"_(موجود حالياً: {existing_count} خبر)_",
+                parse_mode="Markdown")
+            try:
+                loop = asyncio.get_event_loop()
+                count, breaking = await loop.run_in_executor(
+                    None, news_mod.process_and_store_news
+                )
+                logging.info(f"Manual fetch by user {chat_id}: "
+                             f"{count} new, {len(breaking)} breaking")
+
+                if count == 0 and existing_count == 0:
+                    # كل الـRSS فشلت — تشخيص مفصل
+                    await wait.edit_text(
+                        "❌ *فشل جلب الأخبار من كل المصادر*\n\n"
+                        "السبب الأرجح: **HTTP 403** من RSS feeds\n"
+                        "(مواقع الأخبار تـblock الـserver IP)\n\n"
+                        "🔧 الحلول:\n"
+                        "• شوف Railway Deploy Logs لرسائل `RSS [...]: 403`\n"
+                        "• استخدم `صحة` لتشخيص شامل\n"
+                        "• جرب Massive News (لو عندك `MASSIVE_API_KEY`)\n"
+                        "• أو غيّر Railway Region (US ⇄ EU)",
+                        parse_mode="Markdown")
+                    return
+                else:
+                    await wait.delete()
+            except Exception as e:
+                await wait.edit_text(
+                    f"❌ خطأ في جلب الأخبار:\n`{type(e).__name__}: {str(e)[:120]}`",
+                    parse_mode="Markdown")
+                return
+
         await u.message.reply_text(
             news_mod.get_news_msg(hours=24, limit=10),
             parse_mode="Markdown",
@@ -2107,11 +2145,91 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
 
     if text_lower.startswith("أخبار ") or text_lower.startswith("اخبار "):
         coin = text.split()[-1].upper()
+        # نفس الـlogic — fetch لو DB فاضي
+        existing = db.get_recent_news(hours=48, limit=1)
+        if not existing:
+            wait = await u.message.reply_text(
+                "📡 جاري جلب الأخبار من المصادر...",
+                parse_mode="Markdown")
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None, news_mod.process_and_store_news
+                )
+                await wait.delete()
+            except Exception as e:
+                await wait.edit_text(f"❌ فشل جلب الأخبار: {str(e)[:100]}")
+                return
+
         await u.message.reply_text(
             news_mod.get_news_msg(coin=coin, hours=48, limit=15),
             parse_mode="Markdown",
             disable_web_page_preview=True,
         )
+        return
+
+    # ── RSS Diagnostic (يجرب كل feed مباشرة ويعطي تقرير) ──
+    if text in ("rss", "تشخيص_rss", "اختبار_اخبار", "test_news"):
+        wait = await u.message.reply_text(
+            f"🔍 جاري اختبار {len(news_mod.RSS_FEEDS)} RSS feeds...\n"
+            f"_(~30 ثانية)_",
+            parse_mode="Markdown")
+
+        try:
+            import requests as _req
+            results = []
+            for name, url in news_mod.RSS_FEEDS:
+                try:
+                    r = _req.get(
+                        url,
+                        headers={
+                            "User-Agent": news_mod.RSS_USER_AGENT,
+                            "Accept": "application/rss+xml,application/xml,text/xml,*/*",
+                        },
+                        timeout=10,
+                    )
+                    status = r.status_code
+                    if status == 200:
+                        # نحاول نـparse
+                        feed = news_mod.feedparser.parse(r.content)
+                        n_entries = len(feed.entries)
+                        if n_entries > 0:
+                            results.append(f"✅ {name}: {n_entries} مقال")
+                        else:
+                            results.append(f"⚠️ {name}: 200 لكن 0 entries")
+                    else:
+                        results.append(f"❌ {name}: HTTP {status}")
+                except Exception as e:
+                    results.append(f"❌ {name}: {type(e).__name__}")
+
+            # حساب النجاحات
+            ok_count = sum(1 for r in results if r.startswith("✅"))
+
+            msg = f"🔍 *تشخيص RSS Feeds*\n"
+            msg += f"━━━━━━━━━━━━━━━━━\n"
+            msg += f"النجاح: {ok_count}/{len(news_mod.RSS_FEEDS)}\n\n"
+            for r in results:
+                msg += f"{r}\n"
+            msg += "\n━━━━━━━━━━━━━━━━━\n"
+
+            if ok_count == 0:
+                msg += "⚠️ *كل المصادر فشلت!*\n"
+                msg += "السبب: Railway IP محظور من مواقع الأخبار\n\n"
+                msg += "🔧 *الحلول:*\n"
+                msg += "1️⃣ غيّر Railway Region:\n"
+                msg += "   Settings → Region → US-West\n"
+                msg += "2️⃣ أضف `MASSIVE_API_KEY` (يحل المشكلة)\n"
+                msg += "3️⃣ استخدم RSS proxy (rss-bridge)"
+            elif ok_count < len(news_mod.RSS_FEEDS) // 2:
+                msg += "⚠️ معظم المصادر محظورة\n"
+                msg += "_حاول `أخبار` للمصادر الشغالة فقط_"
+            else:
+                msg += f"✅ معظم المصادر شغّالة\n"
+                msg += "_جرب `أخبار` الآن_"
+
+            await wait.edit_text(msg, parse_mode="Markdown")
+        except Exception as e:
+            await wait.edit_text(f"❌ خطأ: {str(e)[:150]}")
         return
 
     # ── Health Check (تشخيصي — يفحص كل المكونات) ──
@@ -2258,6 +2376,21 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
 
     # ── عاجل (الأخبار العالية التأثير فقط) ──
     if text in ("عاجل", "breaking"):
+        # fetch لو DB فاضي
+        existing = db.get_recent_news(hours=24, limit=1)
+        if not existing:
+            wait = await u.message.reply_text(
+                "📡 جاري جلب الأخبار...", parse_mode="Markdown")
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None, news_mod.process_and_store_news
+                )
+                await wait.delete()
+            except Exception as e:
+                await wait.edit_text(f"❌ {str(e)[:100]}")
+                return
+
         await u.message.reply_text(
             news_mod.get_news_msg(hours=12, min_impact=7, limit=10),
             parse_mode="Markdown",
@@ -3093,6 +3226,22 @@ async def _post_init(app):
     except Exception as e:
         logging.error(f"DB init failed: {e}")
 
+    # ②b: جلب أخبار أولية لو DB فاضي (بدون انتظار)
+    try:
+        existing_news = db.get_recent_news(hours=24, limit=1)
+        if not existing_news:
+            logging.info("DB empty - triggering initial news fetch in background...")
+            import threading
+            def _initial_fetch():
+                try:
+                    count, _ = news_mod.process_and_store_news()
+                    logging.info(f"Initial fetch: {count} news stored")
+                except Exception as e:
+                    logging.error(f"Initial fetch failed: {e}")
+            threading.Thread(target=_initial_fetch, daemon=True).start()
+    except Exception as e:
+        logging.warning(f"Initial fetch check failed: {e}")
+
     # ③ فحص Etherscan فعلياً
     eth_status = "❌ غير مفعّل"
     if ETHERSCAN_KEY:
@@ -3239,20 +3388,12 @@ def main():
         name="tracked_deep_analysis",
     )
 
-    # ③ فحص الأخبار كل 15 دقيقة (RSS من 9 مصادر + breaking alerts)
+    # ③ فحص الأخبار كل 15 دقيقة (RSS من 9 مصادر + breaking alerts مع AI inline)
     app.job_queue.run_repeating(
         news_mod.news_check_job,
         interval=900,
-        first=60,
+        first=10,  # أول دورة بعد 10 ثواني (سريع)
         name="news_check",
-    )
-
-    # ③b تحليل AI للأخبار في الخلفية كل 5 دقائق (sync-safe)
-    app.job_queue.run_repeating(
-        news_mod.ai_analysis_job,
-        interval=300,
-        first=180,
-        name="ai_analysis",
     )
 
     # ④ Whale Alert كل 10 دقائق (لو الـAPI key متاح)
