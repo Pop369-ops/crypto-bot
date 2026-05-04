@@ -571,7 +571,7 @@ def generate_trade_decision(result: Dict) -> Dict:
         elif skew_signal == "bearish":
             return {
                 "action": "BUY_PUT",
-                "action_ar": "🔴 *شراء Put* (رهان هابط)",
+                "action_ar": "🟢 *شراء Put* (رهان هابط 📉)",
                 "reason_ar": (
                     f"IV منخفض ({iv_pct:.0f}%) + Skew bearish — "
                     f"Puts رخيصة + السوق خايف = فرصة شراء حماية"
@@ -585,7 +585,7 @@ def generate_trade_decision(result: Dict) -> Dict:
                     "max_loss": "محدود (الـpremium المدفوع)",
                 },
                 "quick_command": f"استراتيجية {cur} bearish",
-                "color": "🔴",
+                "color": "🟢",
                 "risk_warning_ar": "⚠️ نفس مخاطر الـCall لكن في الاتجاه المعاكس.",
                 "trader_type": "متوسط",
             }
@@ -593,7 +593,7 @@ def generate_trade_decision(result: Dict) -> Dict:
             # Skew محايد + IV منخفض = Long Straddle
             return {
                 "action": "BUY_STRADDLE",
-                "action_ar": "⚡ *شراء Straddle* (رهان على التذبذب)",
+                "action_ar": "🟢 *شراء Straddle* (رهان على التذبذب ⚡)",
                 "reason_ar": (
                     f"IV منخفض ({iv_pct:.0f}%) — Options رخيصة جداً، "
                     f"اشتري الإثنين معاً (Call + Put) للربح من أي حركة قوية"
@@ -607,7 +607,7 @@ def generate_trade_decision(result: Dict) -> Dict:
                     "required_move": f"~{iv_pct/4:.1f}% للتعادل",
                 },
                 "quick_command": f"استراتيجية {cur} volatile",
-                "color": "🟡",
+                "color": "🟢",
                 "risk_warning_ar": (
                     "⚠️ تحتاج حركة قوية للربح. لو السعر استقر، خسارة كاملة للـpremium."
                 ),
@@ -633,11 +633,11 @@ def generate_trade_decision(result: Dict) -> Dict:
             "trader_type": "متوسط",
         }
 
-    # 🔴 حالة 4: Skew bearish + IV عادي = شراء Put
+    # 🟢 حالة 4: Skew bearish + IV عادي = شراء Put (action شراء)
     if skew_signal == "bearish":
         return {
             "action": "BUY_PUT",
-            "action_ar": "🔴 *شراء Put* (السوق خايف)",
+            "action_ar": "🟢 *شراء Put* (رهان هابط 📉)",
             "reason_ar": f"Skew bearish — Puts أغلى = توقع هبوط",
             "trade_setup": {
                 "what": "Long Put OTM",
@@ -647,7 +647,7 @@ def generate_trade_decision(result: Dict) -> Dict:
                 "max_loss": "محدود",
             },
             "quick_command": f"استراتيجية {cur} bearish",
-            "color": "🔴",
+            "color": "🟢",
             "risk_warning_ar": "⚠️ نفس مخاطر Call.",
             "trader_type": "متوسط",
         }
@@ -673,7 +673,7 @@ def generate_trade_decision(result: Dict) -> Dict:
                     "max_profit": "محدود",
                 },
                 "quick_command": f"خيارات {cur}",
-                "color": "🟢" if mp_dist > 0 else "🔴",
+                "color": "🟢",
                 "risk_warning_ar": "⚠️ Max Pain إشارة إحصائية، ليس قاعدة مطلقة.",
                 "trader_type": "متقدم",
             }
@@ -776,14 +776,14 @@ def fmt_scan_summary(scan_data: Dict, top_n: int = 15) -> str:
 
         real_tag = "✅" if is_real else "⚠️"
 
-        # القرار المختصر
+        # القرار المختصر — 🟢 شراء (action of buying) / 🔴 بيع (selling premium) / 🟡 انتظر
         decision = generate_trade_decision(r)
         action_short = {
-            "SELL_PREMIUM": "🔴 بيع Premium",
-            "BUY_CALL": "🟢 شراء Call",
-            "BUY_PUT": "🔴 شراء Put",
-            "BUY_STRADDLE": "⚡ Long Straddle",
-            "WAIT": "⏳ انتظر",
+            "SELL_PREMIUM": "🔴 بيع Premium",      # فعلاً بيع
+            "BUY_CALL": "🟢 شراء Call",             # شراء (action)
+            "BUY_PUT": "🟢 شراء Put",               # شراء (action) ← بـ Put طبعاً
+            "BUY_STRADDLE": "🟢 Long Straddle",     # شراء
+            "WAIT": "🟡 انتظر",
         }.get(decision.get("action", "WAIT"), decision.get("action", "?"))
 
         # سعر مختصر
@@ -1005,14 +1005,14 @@ def fmt_scan_quick(scan_data: Dict) -> str:
         iv_pct = r.get("iv_pct", 0)
         is_real = "✅" if r.get("is_real") else "⚠️"
 
-        # القرار المختصر
+        # القرار المختصر — 🟢 شراء / 🔴 بيع / 🟡 انتظر
         decision = generate_trade_decision(r)
         action_short = {
             "SELL_PREMIUM": "🔴 بيع Premium",
             "BUY_CALL": "🟢 شراء Call",
-            "BUY_PUT": "🔴 شراء Put",
-            "BUY_STRADDLE": "⚡ Long Straddle",
-        }.get(decision.get("action", "WAIT"), "⏳")
+            "BUY_PUT": "🟢 شراء Put",
+            "BUY_STRADDLE": "🟢 Long Straddle",
+        }.get(decision.get("action", "WAIT"), "🟡 انتظر")
 
         msg += f"*{i}.* *{cur}* {is_real} ({score}/10) — {action_short}\n"
         msg += f"   💰 ${spot:,.4f} | IV {iv_pct:.0f}%\n\n"
