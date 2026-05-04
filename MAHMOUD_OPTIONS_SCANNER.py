@@ -722,7 +722,7 @@ def fmt_decision(decision: Dict) -> str:
     return msg
 
 
-
+def fmt_scan_results(scan_data: Dict, top_n: int = 15) -> str:
     """تنسيق نتائج المسح للعرض في تيليجرام"""
     if not scan_data.get("ok"):
         return "❌ المسح فشل"
