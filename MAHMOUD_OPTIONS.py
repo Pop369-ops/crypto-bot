@@ -686,9 +686,28 @@ def _get_deribit_chain(currency: str,
         oi = float(s.get("open_interest", 0) or 0)
         volume_24h = float(s.get("volume", 0) or 0)
         iv = float(ticker.get("mark_iv", 0) or 0) / 100  # نسبة عشرية
-        mark_price = float(ticker.get("mark_price", 0) or 0)
-        bid = float(s.get("bid_price", 0) or 0)
-        ask = float(s.get("ask_price", 0) or 0)
+        # ⚠️ Deribit يرجع الأسعار بـunits العملة الأساسية (BTC/ETH/SOL)
+        # مثال: mark_price = 0.0111 BTC = 0.0111 × spot USD
+        mark_price_native = float(ticker.get("mark_price", 0) or 0)
+        bid_native = float(s.get("bid_price", 0) or 0)
+        ask_native = float(s.get("ask_price", 0) or 0)
+
+        # نحوّل للدولار
+        mark_price_usd = mark_price_native * spot
+        bid_usd = bid_native * spot
+        ask_usd = ask_native * spot
+
+        # Greeks:
+        # • Delta و Gamma → ratios (لا تحتاج تحويل)
+        # • Theta و Vega → بـunits العملة (تحتاج × spot للحصول على USD)
+        delta_raw = float(greeks_data.get("delta", 0) or 0)
+        gamma_raw = float(greeks_data.get("gamma", 0) or 0)
+        theta_native = float(greeks_data.get("theta", 0) or 0)
+        vega_native = float(greeks_data.get("vega", 0) or 0)
+
+        # نحول Theta و Vega لـUSD
+        theta_usd = theta_native * spot
+        vega_usd = vega_native * spot
 
         opt_data = {
             "strike": strike,
@@ -696,13 +715,14 @@ def _get_deribit_chain(currency: str,
             "instrument": instr,
             "iv": round(iv, 4),
             "iv_pct": round(iv * 100, 2),
-            "delta": round(float(greeks_data.get("delta", 0) or 0), 4),
-            "gamma": round(float(greeks_data.get("gamma", 0) or 0), 6),
-            "theta": round(float(greeks_data.get("theta", 0) or 0), 4),
-            "vega": round(float(greeks_data.get("vega", 0) or 0), 4),
-            "mark": round(mark_price, 6),
-            "bid": round(bid, 6),
-            "ask": round(ask, 6),
+            "delta": round(delta_raw, 4),
+            "gamma": round(gamma_raw, 6),
+            "theta": round(theta_usd, 2),       # ← USD per day
+            "vega": round(vega_usd, 2),         # ← USD per 1% IV change
+            "mark": round(mark_price_usd, 2),   # ← USD now
+            "mark_native": round(mark_price_native, 6),  # نحفظ الأصلي للمرجع
+            "bid": round(bid_usd, 2),
+            "ask": round(ask_usd, 2),
             "oi": oi,
             "volume": volume_24h,
         }
@@ -1526,34 +1546,34 @@ def fmt_strategy(strategy_data: Dict, spot: float) -> str:
     # Strategy-specific details
     if name == "Bull Call Spread":
         msg += f"🟢 *Long Call:* `${strategy_data['long_call']['strike']:,.0f}` "
-        msg += f"@ \\${strategy_data['long_call']['mark']:.4f}\n"
+        msg += f"@ \\${strategy_data['long_call']['mark']:,.2f}\n"
         msg += f"🔴 *Short Call:* `${strategy_data['short_call']['strike']:,.0f}` "
-        msg += f"@ \\${strategy_data['short_call']['mark']:.4f}\n\n"
-        msg += f"💸 *Net Debit:* `${strategy_data['net_debit']:.4f}`\n"
-        msg += f"🎯 *Max Profit:* `${strategy_data['max_profit']:.4f}` "
+        msg += f"@ \\${strategy_data['short_call']['mark']:,.2f}\n\n"
+        msg += f"💸 *Net Debit:* `${strategy_data['net_debit']:,.2f}`\n"
+        msg += f"🎯 *Max Profit:* `${strategy_data['max_profit']:,.2f}` "
         msg += f"(R:R 1:{strategy_data['rr']})\n"
-        msg += f"🛑 *Max Loss:* `${strategy_data['max_loss']:.4f}`\n"
+        msg += f"🛑 *Max Loss:* `${strategy_data['max_loss']:,.2f}`\n"
         msg += f"⚖️ *Breakeven:* `${strategy_data['breakeven']:,.2f}`\n"
         msg += f"🎯 *Net Delta:* {strategy_data['delta']:+.2f}\n"
 
     elif name == "Bear Put Spread":
         msg += f"🟢 *Long Put:* `${strategy_data['long_put']['strike']:,.0f}` "
-        msg += f"@ \\${strategy_data['long_put']['mark']:.4f}\n"
+        msg += f"@ \\${strategy_data['long_put']['mark']:,.2f}\n"
         msg += f"🔴 *Short Put:* `${strategy_data['short_put']['strike']:,.0f}` "
-        msg += f"@ \\${strategy_data['short_put']['mark']:.4f}\n\n"
-        msg += f"💸 *Net Debit:* `${strategy_data['net_debit']:.4f}`\n"
-        msg += f"🎯 *Max Profit:* `${strategy_data['max_profit']:.4f}` "
+        msg += f"@ \\${strategy_data['short_put']['mark']:,.2f}\n\n"
+        msg += f"💸 *Net Debit:* `${strategy_data['net_debit']:,.2f}`\n"
+        msg += f"🎯 *Max Profit:* `${strategy_data['max_profit']:,.2f}` "
         msg += f"(R:R 1:{strategy_data['rr']})\n"
-        msg += f"🛑 *Max Loss:* `${strategy_data['max_loss']:.4f}`\n"
+        msg += f"🛑 *Max Loss:* `${strategy_data['max_loss']:,.2f}`\n"
         msg += f"⚖️ *Breakeven:* `${strategy_data['breakeven']:,.2f}`\n"
 
     elif name == "Long Straddle":
         msg += f"🟢 *Long Call:* `${strategy_data['call']['strike']:,.0f}` "
-        msg += f"@ \\${strategy_data['call']['mark']:.4f}\n"
+        msg += f"@ \\${strategy_data['call']['mark']:,.2f}\n"
         msg += f"🟢 *Long Put:* `${strategy_data['put']['strike']:,.0f}` "
-        msg += f"@ \\${strategy_data['put']['mark']:.4f}\n\n"
-        msg += f"💸 *Total Cost:* `${strategy_data['total_cost']:.4f}`\n"
-        msg += f"🛑 *Max Loss:* `${strategy_data['max_loss']:.4f}`\n"
+        msg += f"@ \\${strategy_data['put']['mark']:,.2f}\n\n"
+        msg += f"💸 *Total Cost:* `${strategy_data['total_cost']:,.2f}`\n"
+        msg += f"🛑 *Max Loss:* `${strategy_data['max_loss']:,.2f}`\n"
         msg += f"🎯 *Max Profit:* {strategy_data['max_profit']}\n"
         msg += f"⚖️ *Upper BE:* `${strategy_data['upper_breakeven']:,.2f}`\n"
         msg += f"⚖️ *Lower BE:* `${strategy_data['lower_breakeven']:,.2f}`\n"
@@ -1561,10 +1581,10 @@ def fmt_strategy(strategy_data: Dict, spot: float) -> str:
 
     elif name == "Long Strangle":
         msg += f"🟢 *Long Call:* `${strategy_data['call']['strike']:,.0f}` "
-        msg += f"@ \\${strategy_data['call']['mark']:.4f}\n"
+        msg += f"@ \\${strategy_data['call']['mark']:,.2f}\n"
         msg += f"🟢 *Long Put:* `${strategy_data['put']['strike']:,.0f}` "
-        msg += f"@ \\${strategy_data['put']['mark']:.4f}\n\n"
-        msg += f"💸 *Total Cost:* `${strategy_data['total_cost']:.4f}`\n"
+        msg += f"@ \\${strategy_data['put']['mark']:,.2f}\n\n"
+        msg += f"💸 *Total Cost:* `${strategy_data['total_cost']:,.2f}`\n"
         msg += f"⚖️ *Upper BE:* `${strategy_data['upper_breakeven']:,.2f}`\n"
         msg += f"⚖️ *Lower BE:* `${strategy_data['lower_breakeven']:,.2f}`\n"
 
@@ -1574,10 +1594,10 @@ def fmt_strategy(strategy_data: Dict, spot: float) -> str:
         msg += f"  🟢 Buy Put: `${strategy_data['long_put']['strike']:,.0f}`\n"
         msg += f"  🔴 Sell Call: `${strategy_data['short_call']['strike']:,.0f}`\n"
         msg += f"  🟢 Buy Call: `${strategy_data['long_call']['strike']:,.0f}`\n\n"
-        msg += f"💰 *Net Credit:* `${strategy_data['net_credit']:.4f}`\n"
-        msg += f"🎯 *Max Profit:* `${strategy_data['max_profit']:.4f}` "
+        msg += f"💰 *Net Credit:* `${strategy_data['net_credit']:,.2f}`\n"
+        msg += f"🎯 *Max Profit:* `${strategy_data['max_profit']:,.2f}` "
         msg += f"(R:R 1:{strategy_data['rr']})\n"
-        msg += f"🛑 *Max Loss:* `${strategy_data['max_loss']:.4f}`\n"
+        msg += f"🛑 *Max Loss:* `${strategy_data['max_loss']:,.2f}`\n"
         msg += f"⚖️ *Profit Range:* `${strategy_data['lower_breakeven']:,.0f}` - "
         msg += f"`${strategy_data['upper_breakeven']:,.0f}`\n"
 
