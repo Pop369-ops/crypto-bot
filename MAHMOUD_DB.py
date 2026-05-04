@@ -235,6 +235,30 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_scanner_alerts_sent_at "
               "ON scanner_alerts_sent(sent_at DESC)")
 
+    # ─────────────────────────────────────────────
+    # Options Scanner Subscribers (v5.3)
+    # ─────────────────────────────────────────────
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS options_scanner_subscribers (
+        chat_id         INTEGER PRIMARY KEY,
+        scope           TEXT DEFAULT 'real',
+        min_score       INTEGER DEFAULT 6,
+        cooldown_hours  INTEGER DEFAULT 1,
+        started_at      TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS options_scanner_alerts_sent (
+        chat_id         INTEGER,
+        symbol          TEXT,
+        signal_type     TEXT,
+        sent_at         TEXT,
+        score           INTEGER,
+        PRIMARY KEY (chat_id, symbol, signal_type)
+    )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -942,3 +966,89 @@ def cleanup_old_scanner_alerts(days: int = 7) -> int:
     conn.commit()
     conn.close()
     return deleted
+
+
+# ─────────────────────────────────────────────
+# Options Scanner Subscribers (v5.3)
+# ─────────────────────────────────────────────
+
+def add_options_scanner_subscriber(chat_id: int,
+                                    scope: str = "real",
+                                    min_score: int = 6,
+                                    cooldown_hours: int = 1) -> None:
+    """يضيف/يحدّث مشترك في ماسح الخيارات التلقائي"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT OR REPLACE INTO options_scanner_subscribers
+        (chat_id, scope, min_score, cooldown_hours)
+        VALUES (?, ?, ?, ?)
+    """, (chat_id, scope, min_score, cooldown_hours))
+    conn.commit()
+    conn.close()
+
+
+def remove_options_scanner_subscriber(chat_id: int) -> bool:
+    """يلغي اشتراك المستخدم"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM options_scanner_subscribers WHERE chat_id = ?",
+              (chat_id,))
+    deleted = c.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def get_options_scanner_subscribers() -> List[Dict]:
+    """يرجع كل المشتركين"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM options_scanner_subscribers")
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_options_scanner_subscriber(chat_id: int) -> Optional[Dict]:
+    """يرجع إعدادات مستخدم واحد"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM options_scanner_subscribers WHERE chat_id = ?",
+              (chat_id,))
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def record_options_alert(chat_id: int, symbol: str,
+                          signal_type: str, score: int) -> None:
+    """يسجل تنبيه options أُرسل (للـcooldown)"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT OR REPLACE INTO options_scanner_alerts_sent
+        (chat_id, symbol, signal_type, sent_at, score)
+        VALUES (?, ?, ?, ?, ?)
+    """, (chat_id, symbol, signal_type, datetime.utcnow().isoformat(), score))
+    conn.commit()
+    conn.close()
+
+
+def last_options_alert(chat_id: int, symbol: str,
+                        signal_type: str) -> Optional[datetime]:
+    """يرجع آخر وقت تنبيه لهذه العملة وهذا النوع"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT sent_at FROM options_scanner_alerts_sent
+        WHERE chat_id = ? AND symbol = ? AND signal_type = ?
+    """, (chat_id, symbol, signal_type))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    try:
+        return datetime.fromisoformat(row["sent_at"])
+    except (ValueError, TypeError):
+        return None

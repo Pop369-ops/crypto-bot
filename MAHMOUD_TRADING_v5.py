@@ -51,6 +51,7 @@ import MAHMOUD_RISK as risk
 import MAHMOUD_LIQUIDITY as liq_mod
 import MAHMOUD_AI_TRADING as ai_trade
 import MAHMOUD_OPTIONS as opt_mod
+import MAHMOUD_OPTIONS_SCANNER as opt_scan
 import MAHMOUD_WHALE as whale_mod
 import MAHMOUD_BACKTEST as bt_mod
 import MAHMOUD_LONGTERM as lt_mod
@@ -1980,7 +1981,13 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
         "`خيارات [أي عملة]` — Synthetic Greeks (Black-Scholes)\n"
         "`greeks BTC 45000 30 call` — Greeks لعقد محدد\n"
         "`استراتيجية BTC bullish` — اقتراح استراتيجية\n"
-        "`maxpain BTC` — Max Pain (للـreal options فقط)\n"
+        "`maxpain BTC` — Max Pain (للـreal options فقط)\n\n"
+        "🔍 *ماسح الخيارات الذكي (الجديد):*\n"
+        "`ماسح_خيارات` — مسح BTC/ETH/SOL (سريع) ⭐\n"
+        "`ماسح_خيارات top30` — أعلى 30 عملة\n"
+        "`ماسح_خيارات all` — كل العملات (بطيء ~3-5 دقائق)\n"
+        "`اشترك_خيارات` — تنبيهات تلقائية كل 30 دقيقة\n"
+        "`وقف_خيارات` | `حالة_خيارات`\n"
         "_Real: BTC, ETH, SOL | Synthetic: أي عملة_\n\n"
         "━━━━━━━━━━━━━━━━\n"
         "🏥 *تشخيص:*\n"
@@ -2683,6 +2690,153 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
             await u.message.reply_text(f"❌ خطأ: {type(e).__name__}: {str(e)[:120]}")
         return
 
+    # ── ماسح_خيارات [scope] [min_score] ──
+    if text_lower.startswith("ماسح_خيارات") or text_lower.startswith("ماسح خيارات") or \
+       text_lower.startswith("scan_options") or text_lower.startswith("opt_scan"):
+        parts = text.split()
+        scope = "real"  # default
+        min_score = 5
+
+        if len(parts) >= 2:
+            scope_input = parts[1].lower()
+            if scope_input in ("all", "كل"):
+                scope = "all"
+            elif scope_input in ("top30", "top_30"):
+                scope = "top30"
+            elif scope_input in ("top100", "top_100"):
+                scope = "top100"
+            elif scope_input in ("real", "حقيقي"):
+                scope = "real"
+            elif scope_input in ("low", "منخفض"):
+                scope = "real"
+                min_score = 3
+            elif scope_input.isdigit():
+                # شخص كتب رقم = min_score فقط
+                min_score = max(1, min(10, int(scope_input)))
+                scope = "real"
+
+        if len(parts) >= 3 and parts[2].isdigit():
+            min_score = max(1, min(10, int(parts[2])))
+
+        # رسائل تقدير الوقت
+        scope_estimates = {
+            "real": "~10 ثواني",
+            "top30": "~30 ثانية",
+            "top100": "~1-2 دقيقة",
+            "all": "~3-5 دقائق ⚠️",
+        }
+        estimate = scope_estimates.get(scope, "?")
+
+        wait = await u.message.reply_text(
+            f"🔍 *Options Scanner شغّال*\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"📊 النطاق: *{scope}*\n"
+            f"📊 Min score: *{min_score}/10*\n"
+            f"⏱ التقدير: {estimate}\n\n"
+            f"_جاري الفحص..._",
+            parse_mode="Markdown"
+        )
+
+        try:
+            loop = asyncio.get_event_loop()
+            scan_data = await loop.run_in_executor(
+                None,
+                lambda: opt_scan.run_full_scan(scope=scope, min_score=min_score)
+            )
+
+            await wait.delete()
+
+            msg = opt_scan.fmt_scan_results(scan_data, top_n=15)
+            await u.message.reply_text(msg, parse_mode="Markdown")
+
+        except Exception as e:
+            try:
+                await wait.delete()
+            except Exception:
+                pass
+            await u.message.reply_text(
+                f"❌ خطأ في الماسح: {type(e).__name__}: {str(e)[:120]}"
+            )
+        return
+
+    # ── اشترك_خيارات / اشتراك خيارات ──
+    if text_lower.startswith("اشترك_خيارات") or text_lower.startswith("اشترك خيارات") or \
+       text_lower.startswith("subscribe_options"):
+        try:
+            parts = text.split()
+            scope = "real"
+            min_score = 6
+
+            if len(parts) >= 2:
+                scope_input = parts[1].lower()
+                if scope_input in ("all", "real", "top30", "top100", "كل", "حقيقي"):
+                    scope = scope_input.replace("كل", "all").replace("حقيقي", "real")
+
+            if len(parts) >= 3 and parts[2].isdigit():
+                min_score = max(1, min(10, int(parts[2])))
+
+            db.add_options_scanner_subscriber(
+                chat_id=chat_id, scope=scope, min_score=min_score
+            )
+
+            await u.message.reply_text(
+                f"✅ *تم الاشتراك في ماسح الخيارات!*\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"📊 النطاق: *{scope}*\n"
+                f"📊 Min score: *{min_score}/10*\n"
+                f"⏱ الدورة: كل 30 دقيقة\n\n"
+                f"حتصلك تنبيهات تلقائية لما يلقى فرص جديدة.\n\n"
+                f"للإلغاء: `وقف_خيارات`",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            await u.message.reply_text(f"❌ خطأ: {str(e)[:100]}")
+        return
+
+    # ── وقف_خيارات / إلغاء_خيارات ──
+    if text_lower in ("وقف_خيارات", "وقف خيارات", "الغاء_خيارات",
+                       "إلغاء_خيارات", "unsubscribe_options"):
+        try:
+            removed = db.remove_options_scanner_subscriber(chat_id)
+            if removed:
+                await u.message.reply_text(
+                    "✅ تم إلغاء الاشتراك في ماسح الخيارات",
+                    parse_mode="Markdown"
+                )
+            else:
+                await u.message.reply_text(
+                    "⚠️ ما كنت مشترك في الماسح أصلاً"
+                )
+        except Exception as e:
+            await u.message.reply_text(f"❌ خطأ: {str(e)[:100]}")
+        return
+
+    # ── حالة_خيارات (إعدادات الاشتراك الحالية) ──
+    if text_lower in ("حالة_خيارات", "حالة خيارات", "options_status"):
+        try:
+            sub = db.get_options_scanner_subscriber(chat_id)
+            if not sub:
+                await u.message.reply_text(
+                    "❌ ما عندك اشتراك حالياً\n\n"
+                    "للاشتراك: `اشترك_خيارات`",
+                    parse_mode="Markdown"
+                )
+                return
+
+            await u.message.reply_text(
+                f"📊 *حالة اشتراك Options Scanner*\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"📊 النطاق: *{sub['scope']}*\n"
+                f"📊 Min score: *{sub['min_score']}/10*\n"
+                f"⏱ Cooldown: {sub.get('cooldown_hours', 1)} ساعة\n"
+                f"📅 من: {sub.get('started_at', '?')[:16]}\n\n"
+                f"للإلغاء: `وقف_خيارات`",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            await u.message.reply_text(f"❌ خطأ: {str(e)[:100]}")
+        return
+
     # ── تابع ──
     if text.startswith("تابع"):
         parts = text.split()
@@ -3214,6 +3368,14 @@ def main():
             first=120,
             name="whale_check",
         )
+
+    # ④ Options Scanner كل 30 دقيقة (للمشتركين)
+    app.job_queue.run_repeating(
+        opt_scan.options_scanner_job,
+        interval=1800,    # 30 دقيقة
+        first=300,        # أول دورة بعد 5 دقائق
+        name="options_scan",
+    )
 
     # ملاحظة: ما نستخدم AsyncIOScheduler — JobQueue المدمج كافٍ ومتوافق مع event loop
     app.run_polling(
