@@ -722,8 +722,11 @@ def fmt_decision(decision: Dict) -> str:
     return msg
 
 
-def fmt_scan_results(scan_data: Dict, top_n: int = 15) -> str:
-    """تنسيق نتائج المسح للعرض في تيليجرام"""
+def fmt_scan_summary(scan_data: Dict, top_n: int = 15) -> str:
+    """
+    تنسيق *مختصر* لنتائج المسح (للـoverview السريع).
+    يطلع نص واحد قصير فيه كل الفرص في سطر واحد لكل واحدة.
+    """
     if not scan_data.get("ok"):
         return "❌ المسح فشل"
 
@@ -740,7 +743,7 @@ def fmt_scan_results(scan_data: Dict, top_n: int = 15) -> str:
         "all": "كل العملات",
     }.get(scope, scope)
 
-    msg = f"🔍 *Options Scanner — نتائج*\n"
+    msg = f"🔍 *Options Scanner — ملخص*\n"
     msg += f"━━━━━━━━━━━━━━━━━━\n"
     msg += f"📊 النطاق: *{scope_label}*\n"
     msg += f"🔬 تم فحص: *{scanned}* عملة\n"
@@ -756,6 +759,7 @@ def fmt_scan_results(scan_data: Dict, top_n: int = 15) -> str:
     msg += f"━━━━━━━━━━━━━━━━━━\n"
     msg += f"📋 *Top {min(top_n, len(results))} فرصة:*\n\n"
 
+    # سطر واحد قصير لكل فرصة
     for i, r in enumerate(results, 1):
         cur = r["symbol"]
         score = r["score"]
@@ -763,46 +767,224 @@ def fmt_scan_results(scan_data: Dict, top_n: int = 15) -> str:
         spot = r.get("spot", 0)
         iv_pct = r.get("iv_pct", 0)
 
-        # Score emoji
         if score >= 8:
             emoji = "🔥🔥"
         elif score >= 6:
             emoji = "🔥"
-        elif score >= 4:
-            emoji = "⚡"
         else:
-            emoji = "📊"
+            emoji = "⚡"
 
         real_tag = "✅" if is_real else "⚠️"
 
-        msg += f"━━━ *#{i}* ━━━\n"
-        msg += f"{emoji} *{cur}* {real_tag} (score {score}/10)\n"
-        msg += f"   💰 ${spot:,.4f} | IV {iv_pct:.1f}%\n"
-
-        # نضيف skew لو real
-        if is_real and r.get("skew_pct") is not None:
-            msg += f"   📊 Skew: {r['skew_pct']:+.1f}%"
-            if r.get("pcr"):
-                msg += f" | PCR: {r['pcr']:.2f}"
-            msg += "\n"
-
-        # ✨ القرار التداولي الواضح
+        # القرار المختصر
         decision = generate_trade_decision(r)
-        msg += "\n"
-        msg += fmt_decision(decision)
-        msg += "\n"
+        action_short = {
+            "SELL_PREMIUM": "🔴 بيع Premium",
+            "BUY_CALL": "🟢 شراء Call",
+            "BUY_PUT": "🔴 شراء Put",
+            "BUY_STRADDLE": "⚡ Long Straddle",
+            "WAIT": "⏳ انتظر",
+        }.get(decision.get("action", "WAIT"), decision.get("action", "?"))
+
+        # سعر مختصر
+        if spot < 1:
+            price_str = f"${spot:.4f}"
+        elif spot < 100:
+            price_str = f"${spot:.2f}"
+        else:
+            price_str = f"${spot:,.0f}"
+
+        msg += f"*{i}.* {emoji} *{cur}* {real_tag} ({score}/10) — {action_short}\n"
+        msg += f"   💰 {price_str} | IV {iv_pct:.0f}%"
+
+        if is_real and r.get("skew_pct") is not None:
+            msg += f" | Skew: {r['skew_pct']:+.1f}%"
+        msg += "\n\n"
 
     msg += "━━━━━━━━━━━━━━━━━━\n"
-    msg += "💡 *الأوامر المساعدة:*\n"
-    msg += "`خيارات [عملة]` — تحليل تفصيلي\n"
-    msg += "`اشترك_خيارات` — تنبيهات تلقائية كل 30 دقيقة\n"
-    msg += "`ماسح_خيارات real` — فقط BTC/ETH/SOL (أسرع)\n"
+    msg += "💡 للقرار التفصيلي:\n"
+    msg += "`فرصة [رقم]` — تفاصيل كاملة لفرصة\n"
+    msg += "مثلاً: `فرصة 1` لتفاصيل #1\n\n"
+    msg += "`خيارات [عملة]` — تحليل كامل\n"
+    msg += "`اشترك_خيارات` — تنبيهات تلقائية"
 
     return msg
 
 
+def fmt_single_opportunity(scan_data: Dict, idx: int) -> str:
+    """
+    يطلع تفاصيل فرصة واحدة بالكامل (للـcommand `فرصة [رقم]`).
+    """
+    if not scan_data.get("ok"):
+        return "❌ ما فيه نتائج محفوظة"
+
+    results = scan_data.get("results", [])
+    if idx < 1 or idx > len(results):
+        return f"❌ رقم خاطئ — الأرقام المتاحة: 1 إلى {len(results)}"
+
+    r = results[idx - 1]
+    cur = r["symbol"]
+    score = r["score"]
+    is_real = r.get("is_real", False)
+    spot = r.get("spot", 0)
+    iv_pct = r.get("iv_pct", 0)
+
+    if score >= 8:
+        emoji = "🔥🔥"
+    elif score >= 6:
+        emoji = "🔥"
+    else:
+        emoji = "⚡"
+
+    real_tag = "✅" if is_real else "⚠️"
+
+    msg = f"💎 *الفرصة #{idx} — {cur}*\n"
+    msg += f"━━━━━━━━━━━━━━━━━━\n"
+    msg += f"{emoji} Score: *{score}/10*\n"
+    msg += f"💰 السعر: ${spot:,.4f}\n"
+    msg += f"📊 IV: {iv_pct:.1f}% | "
+    msg += f"البيانات: {'Real ✅' if is_real else 'Synthetic ⚠️'}\n"
+
+    if is_real:
+        if r.get("skew_pct") is not None:
+            msg += f"📊 Skew: {r['skew_pct']:+.2f}%"
+        if r.get("pcr"):
+            msg += f" | PCR: {r['pcr']:.2f}"
+        msg += "\n"
+
+    msg += "\n"
+
+    # كل الإشارات
+    if r.get("opportunities"):
+        msg += f"📡 *الإشارات ({len(r['opportunities'])}):*\n"
+        for opp in r["opportunities"]:
+            msg += f"  • {opp.get('msg_ar', '?')}\n"
+        msg += "\n"
+
+    # القرار التفصيلي
+    msg += "━━━━━━━━━━━━━━━━━━\n"
+    decision = generate_trade_decision(r)
+    msg += fmt_decision(decision)
+
+    return msg
+
+
+def fmt_scan_results(scan_data: Dict, top_n: int = 15) -> str:
+    """
+    Backward compatibility — يستدعي fmt_scan_summary الجديد.
+    (الإصدار القديم كان يطلع فرصة كاملة لكل واحدة → message too long)
+    """
+    return fmt_scan_summary(scan_data, top_n)
+
+
+def fmt_scan_results_chunked(scan_data: Dict, top_n: int = 15,
+                              max_chars: int = 3800) -> List[str]:
+    """
+    يقسّم النتائج إلى رسائل متعددة لو ما تنفع رسالة واحدة.
+    Returns: list of message strings (كل واحدة < 4096 حرف)
+    """
+    if not scan_data.get("ok"):
+        return ["❌ المسح فشل"]
+
+    scanned = scan_data["scanned"]
+    found = scan_data["opportunities_found"]
+    duration = scan_data["duration_sec"]
+    scope = scan_data["scope"]
+    results = scan_data["results"][:top_n]
+
+    scope_label = {
+        "real": "BTC/ETH/SOL فقط",
+        "top30": "أعلى 30 عملة",
+        "top100": "أعلى 100 عملة",
+        "all": "كل العملات",
+    }.get(scope, scope)
+
+    # Header (الرسالة الأولى)
+    header = f"🔍 *Options Scanner — نتائج*\n"
+    header += f"━━━━━━━━━━━━━━━━━━\n"
+    header += f"📊 النطاق: *{scope_label}*\n"
+    header += f"🔬 تم فحص: *{scanned}* عملة\n"
+    header += f"💎 الفرص: *{found}* عملة\n"
+    header += f"⏱ الوقت: {duration:.1f}s\n"
+    header += f"📊 Min score: {scan_data['min_score']}/10\n\n"
+
+    if not results:
+        header += "❌ ما لقينا فرص بهذه المعايير\n"
+        header += "💡 جرّب: `ماسح_خيارات low` (min_score=3)"
+        return [header]
+
+    header += f"━━━━━━━━━━━━━━━━━━\n"
+    header += f"📋 *Top {min(top_n, len(results))} فرصة (تفصيلي):*\n"
+
+    # نبني الـmessages
+    messages = []
+    current_msg = header
+    opportunity_count = 0
+
+    for i, r in enumerate(results, 1):
+        cur = r["symbol"]
+        score = r["score"]
+        is_real = r.get("is_real", False)
+        spot = r.get("spot", 0)
+        iv_pct = r.get("iv_pct", 0)
+
+        if score >= 8:
+            emoji = "🔥🔥"
+        elif score >= 6:
+            emoji = "🔥"
+        else:
+            emoji = "⚡"
+
+        real_tag = "✅" if is_real else "⚠️"
+
+        # نبني الـsection
+        section = f"\n━━━ *#{i}* ━━━\n"
+        section += f"{emoji} *{cur}* {real_tag} (score {score}/10)\n"
+        section += f"   💰 ${spot:,.4f} | IV {iv_pct:.1f}%\n"
+
+        if is_real and r.get("skew_pct") is not None:
+            section += f"   📊 Skew: {r['skew_pct']:+.1f}%"
+            if r.get("pcr"):
+                section += f" | PCR: {r['pcr']:.2f}"
+            section += "\n"
+
+        # القرار
+        decision = generate_trade_decision(r)
+        section += "\n"
+        section += fmt_decision(decision)
+        section += "\n"
+
+        # نتحقق إذا تجاوز الحد
+        if len(current_msg) + len(section) > max_chars:
+            # نختم الرسالة الحالية ونبدأ جديدة
+            if current_msg.strip():
+                messages.append(current_msg)
+            current_msg = f"_تابع... (الجزء {len(messages) + 1})_\n"
+            current_msg += section
+        else:
+            current_msg += section
+
+        opportunity_count += 1
+
+    # Footer (للرسالة الأخيرة)
+    footer = "\n━━━━━━━━━━━━━━━━━━\n"
+    footer += "💡 *الأوامر المساعدة:*\n"
+    footer += "`خيارات [عملة]` — تحليل تفصيلي\n"
+    footer += "`اشترك_خيارات` — تنبيهات تلقائية\n"
+
+    if len(current_msg) + len(footer) > max_chars:
+        messages.append(current_msg)
+        messages.append(footer)
+    else:
+        current_msg += footer
+        messages.append(current_msg)
+
+    return messages
+
+
+
 def fmt_scan_quick(scan_data: Dict) -> str:
-    """نسخة مختصرة (للـpush alerts)"""
+    """نسخة مختصرة جداً (للـpush alerts التلقائية)"""
     if not scan_data.get("ok"):
         return ""
 
@@ -823,12 +1005,17 @@ def fmt_scan_quick(scan_data: Dict) -> str:
         iv_pct = r.get("iv_pct", 0)
         is_real = "✅" if r.get("is_real") else "⚠️"
 
-        msg += f"*{i}.* *{cur}* {is_real} (score {score}/10)\n"
-        msg += f"   💰 ${spot:,.4f} | IV {iv_pct:.1f}%\n"
+        # القرار المختصر
+        decision = generate_trade_decision(r)
+        action_short = {
+            "SELL_PREMIUM": "🔴 بيع Premium",
+            "BUY_CALL": "🟢 شراء Call",
+            "BUY_PUT": "🔴 شراء Put",
+            "BUY_STRADDLE": "⚡ Long Straddle",
+        }.get(decision.get("action", "WAIT"), "⏳")
 
-        if r.get("opportunities"):
-            top = max(r["opportunities"], key=lambda o: o["strength"])
-            msg += f"   {top['msg_ar']}\n\n"
+        msg += f"*{i}.* *{cur}* {is_real} ({score}/10) — {action_short}\n"
+        msg += f"   💰 ${spot:,.4f} | IV {iv_pct:.0f}%\n\n"
 
     msg += "━━━━━━━━━━━━━━━━━\n"
     msg += "💡 `ماسح_خيارات` للتفاصيل الكاملة"

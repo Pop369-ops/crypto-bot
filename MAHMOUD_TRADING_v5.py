@@ -1986,6 +1986,7 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
         "`ماسح_خيارات` — مسح BTC/ETH/SOL (سريع) ⭐\n"
         "`ماسح_خيارات top30` — أعلى 30 عملة\n"
         "`ماسح_خيارات all` — كل العملات (بطيء ~3-5 دقائق)\n"
+        "`فرصة 1` — تفاصيل فرصة من آخر مسح ⭐\n"
         "`اشترك_خيارات` — تنبيهات تلقائية كل 30 دقيقة\n"
         "`وقف_خيارات` | `حالة_خيارات`\n"
         "_Real: BTC, ETH, SOL | Synthetic: أي عملة_\n\n"
@@ -2746,7 +2747,19 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
 
             await wait.delete()
 
-            msg = opt_scan.fmt_scan_results(scan_data, top_n=15)
+            # نخزّن النتائج للـuser للاستخدام مع `فرصة [رقم]`
+            if not hasattr(c, 'user_data'):
+                c.user_data = {}
+            c.user_data[chat_id] = c.user_data.get(chat_id, {})
+            c.user_data[chat_id]['last_scan'] = scan_data
+
+            # نطلع ملخص واحد (سطر لكل فرصة + قرار مختصر)
+            msg = opt_scan.fmt_scan_summary(scan_data, top_n=20)
+
+            # Telegram limit 4096 حرف — لو الرسالة طويلة، نقصرها
+            if len(msg) > 4000:
+                msg = opt_scan.fmt_scan_summary(scan_data, top_n=10)
+
             await u.message.reply_text(msg, parse_mode="Markdown")
 
         except Exception as e:
@@ -2757,6 +2770,41 @@ async def handle_msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
             await u.message.reply_text(
                 f"❌ خطأ في الماسح: {type(e).__name__}: {str(e)[:120]}"
             )
+        return
+
+    # ── فرصة [رقم] — تفاصيل فرصة من آخر مسح ──
+    if text_lower.startswith("فرصة ") or text_lower.startswith("فرصه ") or \
+       text_lower.startswith("opportunity "):
+        parts = text.split()
+        if len(parts) < 2:
+            await u.message.reply_text(
+                "*استخدام:*\n"
+                "`فرصة 1` — تفاصيل الفرصة الأولى\n"
+                "`فرصة 5` — تفاصيل الفرصة الخامسة\n\n"
+                "_شغّل `ماسح_خيارات` أولاً_",
+                parse_mode="Markdown")
+            return
+
+        try:
+            idx = int(parts[1])
+        except ValueError:
+            await u.message.reply_text("❌ الرقم لازم يكون عدد صحيح")
+            return
+
+        # نجلب آخر scan
+        if not hasattr(c, 'user_data'):
+            c.user_data = {}
+        last_scan = c.user_data.get(chat_id, {}).get('last_scan')
+
+        if not last_scan:
+            await u.message.reply_text(
+                "❌ ما فيه نتائج محفوظة\n\n"
+                "شغّل `ماسح_خيارات` أولاً، ثم استخدم `فرصة [رقم]`",
+                parse_mode="Markdown")
+            return
+
+        msg = opt_scan.fmt_single_opportunity(last_scan, idx)
+        await u.message.reply_text(msg, parse_mode="Markdown")
         return
 
     # ── اشترك_خيارات / اشتراك خيارات ──
