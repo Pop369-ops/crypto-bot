@@ -462,7 +462,267 @@ def run_full_scan(scope: str = "all",
 # Display Formatters
 # ─────────────────────────────────────────────
 
-def fmt_scan_results(scan_data: Dict, top_n: int = 15) -> str:
+def generate_trade_decision(result: Dict) -> Dict:
+    """
+    يحوّل الفرص (opportunities) إلى **قرار تداولي واضح**.
+
+    Returns:
+    {
+        "action": "BUY_STRADDLE" | "SELL_IRON_CONDOR" | "BUY_CALL" | "BUY_PUT" |
+                  "BUY_CALL_SPREAD" | "BUY_PUT_SPREAD" | "WAIT",
+        "action_ar": "اشتري Long Straddle (شراء Call + Put معاً)",
+        "reason_ar": "IV عالي جداً + skew محايد = الأفضل بيع premium",
+        "trade_setup": {
+            "what": "Long Straddle ATM",
+            "how": "اشتري Call + Put عند نفس الـStrike",
+            "best_when": "تتوقع تذبذب قوي بأي اتجاه",
+            "max_loss": "تكلفة الـpremium",
+            "max_profit": "غير محدود (نظرياً)",
+        },
+        "quick_command": "استراتيجية BTC volatile",
+        "color": "🟢" | "🔴" | "🟡" | "⚪",
+        "risk_warning_ar": "..."
+    }
+    """
+    if not result.get("opportunities"):
+        return {
+            "action": "WAIT",
+            "action_ar": "⏳ انتظر — لا توجد إشارات قوية",
+            "reason_ar": "الفرص غير واضحة الآن",
+            "color": "⚪",
+        }
+
+    cur = result.get("symbol", "?")
+    spot = result.get("spot", 0)
+    iv_pct = result.get("iv_pct", 0)
+    iv_signal = result.get("iv_signal", "normal")
+    skew_signal = result.get("skew_signal", "neutral")
+    is_real = result.get("is_real", False)
+
+    # Format للأرقام حسب السعر
+    if spot < 1:
+        fmt_price = lambda x: f"{x:.4f}"
+    elif spot < 100:
+        fmt_price = lambda x: f"{x:.2f}"
+    else:
+        fmt_price = lambda x: f"{int(x):,}"
+
+    # ATM strike تقريبي
+    atm = spot
+    otm_call = spot * 1.10  # +10%
+    otm_put = spot * 0.90   # -10%
+
+    # ════════════════════════════════════════
+    # القرار حسب الإشارات
+    # ════════════════════════════════════════
+
+    # 🔥 حالة 1: IV عالي جداً (>100%) → بيع Premium
+    if iv_signal == "very_high":
+        return {
+            "action": "SELL_PREMIUM",
+            "action_ar": "🔴 *بيع Premium* (Iron Condor)",
+            "reason_ar": f"IV عالي جداً ({iv_pct:.0f}%) — Options غالية، الأفضل تبيع",
+            "trade_setup": {
+                "what": "Iron Condor",
+                "how": f"بيع Put ${fmt_price(otm_put)} + بيع Call ${fmt_price(otm_call)} "
+                       f"+ شراء Put أبعد (حماية) + شراء Call أبعد (حماية)",
+                "best_when": "تتوقع السعر يبقى في نطاق ضيق (ranging)",
+                "max_profit": "Net Credit (تستلم premium مقدماً)",
+                "max_loss": "محدود (الفرق بين الـwings)",
+                "estimated_profit": "5-15% من الـcollateral",
+            },
+            "quick_command": f"استراتيجية {cur} neutral",
+            "color": "🔴",
+            "risk_warning_ar": (
+                "⚠️ *خطر:* لو السعر تجاوز الـwings، خسارة سريعة. "
+                "حدد Stop Loss عند 50% من max loss."
+            ),
+            "trader_type": "محترف (يعرف option spreads)",
+        }
+
+    # ❄️ حالة 2: IV منخفض جداً (<40%) → شراء Premium
+    if iv_signal == "very_low":
+        # نتحقق من Skew لتحديد الاتجاه
+        if skew_signal == "bullish":
+            return {
+                "action": "BUY_CALL",
+                "action_ar": "🟢 *شراء Call* (رهان صاعد)",
+                "reason_ar": (
+                    f"IV منخفض ({iv_pct:.0f}%) + Skew bullish — "
+                    f"Calls رخيصة + السوق متفائل = فرصة شراء"
+                ),
+                "trade_setup": {
+                    "what": "Long Call ATM/OTM",
+                    "how": f"اشتري Call عند ${fmt_price(atm)} (ATM) "
+                           f"أو ${fmt_price(otm_call)} (OTM = أرخص)",
+                    "best_when": "تتوقع صعود قوي خلال 30-60 يوم",
+                    "max_profit": "غير محدود (نظرياً)",
+                    "max_loss": "محدود (الـpremium المدفوع)",
+                    "estimated_breakeven": f"${fmt_price(atm * 1.05)}",
+                },
+                "quick_command": f"استراتيجية {cur} bullish",
+                "color": "🟢",
+                "risk_warning_ar": (
+                    "⚠️ Time decay يأكل قيمة Call يومياً. "
+                    "اختر expiry بعيد (60D+) لتقليل Theta."
+                ),
+                "trader_type": "متوسط",
+            }
+        elif skew_signal == "bearish":
+            return {
+                "action": "BUY_PUT",
+                "action_ar": "🔴 *شراء Put* (رهان هابط)",
+                "reason_ar": (
+                    f"IV منخفض ({iv_pct:.0f}%) + Skew bearish — "
+                    f"Puts رخيصة + السوق خايف = فرصة شراء حماية"
+                ),
+                "trade_setup": {
+                    "what": "Long Put ATM/OTM",
+                    "how": f"اشتري Put عند ${fmt_price(atm)} (ATM) "
+                           f"أو ${fmt_price(otm_put)} (OTM = أرخص)",
+                    "best_when": "تتوقع هبوط قوي خلال 30-60 يوم",
+                    "max_profit": f"كبير (يصل للـstrike - premium)",
+                    "max_loss": "محدود (الـpremium المدفوع)",
+                },
+                "quick_command": f"استراتيجية {cur} bearish",
+                "color": "🔴",
+                "risk_warning_ar": "⚠️ نفس مخاطر الـCall لكن في الاتجاه المعاكس.",
+                "trader_type": "متوسط",
+            }
+        else:
+            # Skew محايد + IV منخفض = Long Straddle
+            return {
+                "action": "BUY_STRADDLE",
+                "action_ar": "⚡ *شراء Straddle* (رهان على التذبذب)",
+                "reason_ar": (
+                    f"IV منخفض ({iv_pct:.0f}%) — Options رخيصة جداً، "
+                    f"اشتري الإثنين معاً (Call + Put) للربح من أي حركة قوية"
+                ),
+                "trade_setup": {
+                    "what": "Long Straddle (Call + Put على نفس Strike)",
+                    "how": f"اشتري Call + Put عند ${fmt_price(atm)} (ATM)",
+                    "best_when": "تتوقع حركة قوية لكن ما تعرف الاتجاه (قبل أحداث)",
+                    "max_profit": "غير محدود (إذا السعر تحرك بقوة)",
+                    "max_loss": "تكلفة الـpremiums",
+                    "required_move": f"~{iv_pct/4:.1f}% للتعادل",
+                },
+                "quick_command": f"استراتيجية {cur} volatile",
+                "color": "🟡",
+                "risk_warning_ar": (
+                    "⚠️ تحتاج حركة قوية للربح. لو السعر استقر، خسارة كاملة للـpremium."
+                ),
+                "trader_type": "متوسط - متقدم",
+            }
+
+    # 🟢 حالة 3: Skew bullish قوي + IV عادي = شراء Call
+    if skew_signal == "bullish":
+        return {
+            "action": "BUY_CALL",
+            "action_ar": "🟢 *شراء Call* (السوق صاعد)",
+            "reason_ar": f"Skew bullish — السوق يسعّر Calls أرخص نسبياً",
+            "trade_setup": {
+                "what": "Long Call OTM",
+                "how": f"اشتري Call عند ${fmt_price(otm_call)} (10% فوق السعر)",
+                "best_when": "تتوقع استمرار الصعود",
+                "max_profit": "غير محدود",
+                "max_loss": "محدود (الـpremium)",
+            },
+            "quick_command": f"استراتيجية {cur} bullish",
+            "color": "🟢",
+            "risk_warning_ar": "⚠️ Theta decay، اختر expiry بعيد.",
+            "trader_type": "متوسط",
+        }
+
+    # 🔴 حالة 4: Skew bearish + IV عادي = شراء Put
+    if skew_signal == "bearish":
+        return {
+            "action": "BUY_PUT",
+            "action_ar": "🔴 *شراء Put* (السوق خايف)",
+            "reason_ar": f"Skew bearish — Puts أغلى = توقع هبوط",
+            "trade_setup": {
+                "what": "Long Put OTM",
+                "how": f"اشتري Put عند ${fmt_price(otm_put)} (10% تحت السعر)",
+                "best_when": "تتوقع استمرار الهبوط",
+                "max_profit": "كبير",
+                "max_loss": "محدود",
+            },
+            "quick_command": f"استراتيجية {cur} bearish",
+            "color": "🔴",
+            "risk_warning_ar": "⚠️ نفس مخاطر Call.",
+            "trader_type": "متوسط",
+        }
+
+    # 🎯 حالة 5: Max Pain pull (للـreal options فقط)
+    for opp in result.get("opportunities", []):
+        if opp.get("type") == "max_pain_pull":
+            mp = result.get("max_pain", 0)
+            mp_dist = result.get("max_pain_distance", 0)
+            direction = "صعود" if mp_dist > 0 else "هبوط"
+            action_type = "BUY_CALL" if mp_dist > 0 else "BUY_PUT"
+            return {
+                "action": action_type,
+                "action_ar": f"🎯 *Max Pain Pull* — توقع {direction}",
+                "reason_ar": (
+                    f"Max Pain عند ${mp:,.0f} ({mp_dist:+.1f}%) — "
+                    f"السوق قد ينجذب نحو هذا السعر عند الـExpiry"
+                ),
+                "trade_setup": {
+                    "what": f"Buy {'Call' if mp_dist > 0 else 'Put'} عند Max Pain",
+                    "how": f"Strike ≈ ${mp:,.0f}, Expiry قريب من weekly",
+                    "best_when": "خلال آخر 7 أيام قبل expiry",
+                    "max_profit": "محدود",
+                },
+                "quick_command": f"خيارات {cur}",
+                "color": "🟢" if mp_dist > 0 else "🔴",
+                "risk_warning_ar": "⚠️ Max Pain إشارة إحصائية، ليس قاعدة مطلقة.",
+                "trader_type": "متقدم",
+            }
+
+    # ⚪ حالة 6: ما فيش إشارة قوية
+    return {
+        "action": "WAIT",
+        "action_ar": "⏳ *انتظر* — الإشارات ضعيفة",
+        "reason_ar": "لا توجد فرصة واضحة الآن",
+        "color": "⚪",
+    }
+
+
+def fmt_decision(decision: Dict) -> str:
+    """تنسيق القرار التداولي للعرض"""
+    action_ar = decision.get("action_ar", "")
+    reason = decision.get("reason_ar", "")
+    color = decision.get("color", "⚪")
+    setup = decision.get("trade_setup", {})
+    quick_cmd = decision.get("quick_command", "")
+    risk = decision.get("risk_warning_ar", "")
+    trader = decision.get("trader_type", "")
+
+    msg = f"   {color} *القرار:* {action_ar}\n"
+    msg += f"   _{reason}_\n"
+
+    if setup:
+        msg += f"\n   📋 *كيف:*\n"
+        msg += f"   • {setup.get('how', '?')}\n"
+        if setup.get("best_when"):
+            msg += f"   • متى: {setup['best_when']}\n"
+        if setup.get("max_profit"):
+            msg += f"   • أقصى ربح: {setup['max_profit']}\n"
+        if setup.get("max_loss"):
+            msg += f"   • أقصى خسارة: {setup['max_loss']}\n"
+
+    if risk:
+        msg += f"\n   {risk}\n"
+
+    if trader:
+        msg += f"   👤 المتداول المناسب: _{trader}_\n"
+
+    if quick_cmd:
+        msg += f"\n   💎 الأمر السريع: `{quick_cmd}`\n"
+
+    return msg
+
+
+
     """تنسيق نتائج المسح للعرض في تيليجرام"""
     if not scan_data.get("ok"):
         return "❌ المسح فشل"
@@ -515,7 +775,8 @@ def fmt_scan_results(scan_data: Dict, top_n: int = 15) -> str:
 
         real_tag = "✅" if is_real else "⚠️"
 
-        msg += f"*{i}.* {emoji} *{cur}* {real_tag} (score {score}/10)\n"
+        msg += f"━━━ *#{i}* ━━━\n"
+        msg += f"{emoji} *{cur}* {real_tag} (score {score}/10)\n"
         msg += f"   💰 ${spot:,.4f} | IV {iv_pct:.1f}%\n"
 
         # نضيف skew لو real
@@ -525,23 +786,17 @@ def fmt_scan_results(scan_data: Dict, top_n: int = 15) -> str:
                 msg += f" | PCR: {r['pcr']:.2f}"
             msg += "\n"
 
-        # Top opportunity
-        if r.get("opportunities"):
-            top_opp = max(r["opportunities"], key=lambda o: o["strength"])
-            msg += f"   {top_opp['msg_ar']}\n"
-
-        # كم opportunity في المجموع
-        if len(r.get("opportunities", [])) > 1:
-            msg += f"   _+{len(r['opportunities']) - 1} إشارة إضافية_\n"
-
+        # ✨ القرار التداولي الواضح
+        decision = generate_trade_decision(r)
+        msg += "\n"
+        msg += fmt_decision(decision)
         msg += "\n"
 
     msg += "━━━━━━━━━━━━━━━━━━\n"
-    msg += "💡 *الأوامر:*\n"
-    msg += "`خيارات BTC` — تحليل تفصيلي\n"
+    msg += "💡 *الأوامر المساعدة:*\n"
+    msg += "`خيارات [عملة]` — تحليل تفصيلي\n"
     msg += "`اشترك_خيارات` — تنبيهات تلقائية كل 30 دقيقة\n"
     msg += "`ماسح_خيارات real` — فقط BTC/ETH/SOL (أسرع)\n"
-    msg += "`ماسح_خيارات top30` — أعلى 30 عملة\n"
 
     return msg
 
