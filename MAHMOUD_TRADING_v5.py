@@ -696,6 +696,20 @@ def analyze(sym):
         R["price"] = price
         R["rate"]  = rate
 
+        # ⚠️ تحقق من البيانات قبل التحليل
+        if df is None:
+            R["err"] = (f"❌ ما قدرت أجلب شموع {sym}\n"
+                        f"السبب الأرجح: العملة قديمة أو سيولتها منخفضة\n"
+                        f"جرّب: BTC ETH SOL أو عملة معروفة")
+            return R
+
+        if len(df) < 30:
+            R["err"] = (f"⚠️ بيانات {sym} غير كافية ({len(df)} شمعة فقط)\n"
+                        f"يحتاج 30 شمعة على الأقل للتحليل\n"
+                        f"السبب: العملة جديدة جداً أو منخفضة السيولة\n"
+                        f"جرّب عملة أكبر")
+            return R
+
         # ─── 1. Funding Rate ───
         if rate <= -0.05:
             R["sl"] += 1
@@ -971,7 +985,21 @@ def analyze(sym):
             R["size"] = "2% من المحفظة"
 
     except Exception as e:
-        R["err"] = f"❌ {str(e)[:120]}"
+        # نلتقط أنواع الأخطاء الشائعة برسائل أوضح
+        err_str = str(e)
+        err_type = type(e).__name__
+        if "out-of-bounds" in err_str.lower() or "index" in err_str.lower():
+            R["err"] = (f"⚠️ بيانات {sym} غير كافية للتحليل الكامل\n"
+                        f"السبب: عدد الشموع أقل من المطلوب\n"
+                        f"تفاصيل: {err_type}: {err_str[:80]}\n"
+                        f"💡 جرّب عملة بسيولة أعلى")
+        elif "key" in err_str.lower() or "column" in err_str.lower():
+            R["err"] = (f"⚠️ بيانات {sym} ناقصة\n"
+                        f"السبب: API ما رجّع كل البيانات المطلوبة\n"
+                        f"تفاصيل: {err_type}: {err_str[:80]}")
+        else:
+            R["err"] = f"❌ خطأ في تحليل {sym}: {err_type}: {err_str[:120]}"
+        logging.warning(f"analyze({sym}) failed: {err_type}: {err_str[:200]}")
 
     return R
 
